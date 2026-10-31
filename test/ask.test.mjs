@@ -8,7 +8,14 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ask, expr, AskError } from '../lib/ask.js'
+import { ask, expr, AskError, setAskLogSink } from '../lib/ask.js'
+
+/**
+ * Collect the lifecycle lines instead of letting them hit stdout: the suite stays
+ * readable, and the log test below asserts exactly what was said.
+ */
+const logLines = []
+setAskLogSink((line) => logLines.push(line))
 
 const PROMPT = '请用一句话介绍你自己'
 
@@ -374,4 +381,48 @@ test('a hung CDP evaluate fails as cdp-timeout instead of waiting forever', asyn
   assert.match(outcome.error.message, /within 50ms/)
   assert.doesNotMatch(outcome.error.message, /undefined/)
   assert.equal(state.disposed, 1, 'the CDP session must still be released after a timeout')
+})
+
+test('log: each ask reports its start and its outcome, without echoing the prompt', async () => {
+  logLines.length = 0
+  const okRun = await runWithFake({ composer: '', onSend: startGeneration(), onSample: streamSamples })
+  assert.equal(okRun.outcome.ok, true)
+  const busyRun = await runWithFake({ busy: true })
+  assert.equal(busyRun.outcome.ok, false)
+
+  const events = logLines.map((line) => line.split(' ')[2])
+  assert.deepEqual(events, ['start', 'settled', 'start', 'failed'])
+  assert.ok(
+    logLines.every((line) => line.startsWith('[zcode-native] ask ')),
+    logLines.join('\n'),
+  )
+  assert.ok(logLines.some((line) => line.includes('code=busy')), 'the failure code must be in the line')
+  assert.ok(logLines.some((line) => line.includes('status=ok')))
+  assert.ok(logLines.some((line) => line.includes(`promptChars=${PROMPT.length}`)))
+  // The prompt itself never leaves the process — only its size does.
+  assert.ok(!logLines.some((line) => line.includes(PROMPT)), 'the prompt text must not be logged')
+})
+
+test('log: a cancel reports that the app was released, and whether it went idle', async () => {
+  logLines.length = 0
+  const controller = new AbortController()
+  let samples = 0
+  const { outcome } = await runWithFake(
+    {
+      composer: '',
+      onSend: startGeneration(),
+      onSample: (state) => {
+        streamSamples(state)
+        samples += 1
+        if (samples === 1) controller.abort()
+      },
+    },
+    { signal: controller.signal, askTimeoutMs: 600000 },
+  )
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.value.status, 'aborted')
+  const release = logLines.find((line) => line.includes('ask release'))
+  assert.ok(release, logLines.join('\n'))
+  assert.match(release, /clicked=true/)
+  assert.match(release, /idle=true/)
 })

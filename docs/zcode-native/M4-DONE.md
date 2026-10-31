@@ -182,3 +182,24 @@ false，紧接着的 `ask()` 正常完成——修复前这里是"4 分钟后 `h
 撞 `busy`"。
 
 M4 的四个验收点至此都有证据：派活结算、连续派活、真实输出不丢、取消真的停下 ZCode。
+
+## 10. 可观测性：ask 生命周期日志
+
+在这之前插件只打一行 `[zcode-native] loaded`，M4 排查全靠手写 DOM 探针：一次卡住的派活
+（读循环空转到 600s、占住宿主激活槽位）在日志里完全没有痕迹。现在每次派活留两行：
+
+```
+[zcode-native] ask start port=9222 promptChars=42 waitedMs=0
+[zcode-native] ask settled status=ok elapsedMs=4311 answerChars=5
+```
+
+- `waitedMs` 是排队时间，不是等 ZCode 的时间——它变大就说明前一条派活卡住了，这正是这次
+  两次「不明原因的失败」的形态。
+- 失败：`ask failed code=<busy|no-new-turn|session-changed|…> elapsedMs=… detail="…"`。
+- 取消：额外一行 `ask release clicked=<bool> idle=<bool> elapsedMs=…`；`idle=false` 意味着
+  点了 `停止生成` 但 ZCode 侧还在生成。
+- prompt 与答案正文**永不进日志**，只记长度；`test/ask.test.mjs` 里有专门断言
+  （`the prompt text must not be logged`）。
+- 日志 sink 可替换（`setAskLogSink`），测试用它收集而不是污染 stdout。
+
+测试 54/54。

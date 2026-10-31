@@ -120,6 +120,20 @@ DSH 界面右侧边栏（Subagents / Tasks 旁）出现「ZCode」tab：账号�
   猜测的数值**。
 - 所有 HTTP 路由只接受 loopback 来源（`127.0.0.0/8`、`::1`），其余 403。
 
+## 日志
+
+每次派活在宿主日志（`~/Library/Logs/DSH Desktop/harness.log`）里留两行，出问题先看这里：
+
+```
+[zcode-native] ask start port=9222 promptChars=42 waitedMs=0
+[zcode-native] ask settled status=ok elapsedMs=4311 answerChars=5
+```
+
+失败是 `ask failed code=busy elapsedMs=0 detail="…"`；取消多一行
+`ask release clicked=true idle=true elapsedMs=258`（`idle=false` = 点了停止但 ZCode 还在
+生成，接下来的派活会撞 `busy`）。`waitedMs` 不是在等 ZCode，是在等前一条派活让出队列，
+它变大说明前一条卡住了。prompt 与答案正文永远不进日志，只记长度。
+
 ## 已知限制
 
 - 一次只能服务一个 ZCode 会话：派活串行排队，ZCode 正在生成时会拒绝新任务。
@@ -133,9 +147,9 @@ DSH 界面右侧边栏（Subagents / Tasks 旁）出现「ZCode」tab：账号�
 - ✅ M0 — 插件骨架（加载验证 + 设置卡）
 - ✅ M1 — 只读状态采集（账号 / 套餐 / catalog）+ `/status` 路由
 - ✅ M2 — 侧边栏看板 tab + 设置页开关
-- ✅ M3 — 派活闭环（`/ask`：清空 → 写入校验 → 发送 → 按回合索引取答）
-- 🚧 M4 — 原生子代理（`subagent_zcode` 工具 + provider）开发中
-- ⬜ M5 — 开源发布
+- ✅ M3 — 派活闭环（`/ask`：清空 → 写入校验 → 发送 → 读最后一个回合取答）
+- ✅ M4 — 原生子代理（`subagent_zcode` 工具 + provider，宿主内验收通过）
+- ✅ M5 — 开源发布
 
 ## 许可证
 
