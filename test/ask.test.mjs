@@ -20,6 +20,7 @@ function makeFakeCdp(options = {}) {
     busy: options.busy ?? false,
     sendButton: options.sendButton ?? true,
     sendClicks: 0,
+    stopClicks: 0,
     keyEvents: [],
     insertTexts: [],
     genSamples: 0,
@@ -41,6 +42,16 @@ function makeFakeCdp(options = {}) {
         return true
       }
       if (value === expr.turnCount) return state.turns.length
+      // Cancel path: clicking 停止生成 must actually end the generation, so a
+      // test can assert the app is idle again by the time ask() settles.
+      if (value === expr.clickStop) {
+        if (!state.busy) return false
+        state.stopClicks += 1
+        if (options.onStop) options.onStop(state)
+        else state.busy = false
+        return true
+      }
+      if (value === expr.isBusy) return state.busy
       if (typeof value === 'string' && value.includes('group/assistant-row')) {
         const index = Number(/turns\[(\d+)\]/.exec(value)?.[1] ?? -1)
         options.onSample?.(state)
@@ -169,6 +180,31 @@ test('normal path: the answer is read from turns[before], not the last turn', as
   assert.equal(state.disposed, 1, 'the CDP session is disposed exactly once')
 })
 
+test('abort: asking ZCode to stop is part of cancelling, not just settling', async () => {
+  const controller = new AbortController()
+  let samples = 0
+  const { outcome, state } = await runWithFake(
+    {
+      onSend: startGeneration({ busySamples: 1e9 }),
+      onSample: (state) => {
+        streamSamples(state)
+        samples += 1
+        if (samples >= 2) controller.abort()
+      },
+    },
+    { debugPort: 9333, signal: controller.signal, askTimeoutMs: 600000 },
+  )
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.value.status, 'aborted')
+  assert.match(outcome.value.partialText, /^chunk-\d+$/, 'the partial text seen so far is preserved')
+  assert.equal(state.stopClicks, 1, 'the 停止生成 button must be clicked on abort')
+  // The measured defect: dispose() returned 'aborted' in 299ms while ZCode kept
+  // generating for minutes. Cancel must leave the app idle, or every later ask()
+  // fails the `busy` pre-check.
+  assert.equal(state.busy, false, 'ZCode must not still be generating when ask() settles')
+  assert.equal(state.disposed, 1)
+})
+
 test('timeout: returns partialText, never resends', async () => {
   const { outcome, state } = await runWithFake(
     { onSend: startGeneration({ busySamples: 1e9 }), onSample: streamSamples },
@@ -179,6 +215,10 @@ test('timeout: returns partialText, never resends', async () => {
   assert.match(outcome.value.partialText, /^chunk-\d+$/, 'partialText is the last streamed text')
   assert.ok(outcome.value.elapsedMs >= 10000, `elapsed ${outcome.value.elapsedMs} must reach the deadline`)
   assert.equal(state.sendClicks, 1, 'must not click 发送 a second time')
+  // Giving up on the answer must not leave the app generating (same defect class
+  // as abort): an abandoned turn would block every later ask on `busy`.
+  assert.equal(state.stopClicks, 1, 'a timed-out turn must be stopped too')
+  assert.equal(state.busy, false)
 })
 
 test('serialization: a concurrent ask waits for the running one to finish', async () => {
