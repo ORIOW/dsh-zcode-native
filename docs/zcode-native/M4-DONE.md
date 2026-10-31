@@ -80,3 +80,37 @@ timeout 用例补 `stopClicks===1` 与 `busy===false`。假 CDP 的 `clickStop` 
 
 - **宿主需重启一次**才能加载修复后的 `lib/ask.js`（host 半身不热重载）。重启后可在
   宿主内派长任务再取消，复验「子代理在父代理侧消失 + ZCode 停止生成」。
+
+## 7. 第二轮修复（2026-11-01 00:32）：新回合检测不能再按索引/计数
+
+重启后宿主内第一次派活就失败：`zcode: no-new-turn: no new assistant turn within
+20000ms — the prompt was not sent`，而手工发送链路（focus → insertText → 点击发送）
+在同一时刻是通的；直接调 `ask()` 也以 `ok / 0.1.0 / 4314ms` 正常返回。
+
+真实原因出在「怎么认出新回合」。旧实现把点击前的 `turns` 计数记成 `before`，发送后用
+`turnsAfter > before` 判定已发送，再用 `turns[before]` 作为读答案的地址。而实测 ZCode
+渲染出的 assistant-turn 数量在同一段对话里会在 **3–5 之间浮动**（生成中 / 被点停后都会
+少渲染，本机连采 8 次空闲态才稳定在 5）。于是：
+
+- 计数回落时，`turnsAfter > before` 永远假 → 报 `no-new-turn`（宿主内见到的失败）；
+- `turns[before]` 越界 → `present:false`，读循环空转到 `askTimeoutMs`（默认 600000ms），
+  期间占住 `lib/ask.js` 的模块级 `queue`，并让宿主子代理池的三个激活槽位一直被占满
+  （`subagent limit reached (active child limit: 3)`）。
+
+修法（`lib/ask.js`）：不再用索引/计数当地址。
+
+- `expr.probe` 额外返回 `lastText`（点击前最后一个 turn 的文本，作基线）；
+- `expr.lastTurn` 返回最后一个 turn 的 `{ present, turns, text, busy }`；
+- 发送判定改为「busy 出现 / 计数增长 / 最后一个 turn 的文本离开基线」三者之一；
+- 读答案改为读最后一个 turn，并在「没捕到 busy 且文本仍等于基线且计数没涨」时明确跳过
+  （防止把点击前那条答案当成本次答案）。
+
+测试 51/51。新增用例 `a shrinking turn list must not read as "not sent" or hang the
+read`：假 CDP 在发送时移除最早一个 turn（计数不增长，模拟真实卸载），旧实现会报
+`no-new-turn`，新实现仍拿到 `REAL-ANSWER`。
+
+真机复核（未重启宿主，直接用磁盘上的新 `lib/ask.js` 调 `ask()`）：
+`pre: {"busy":false,"hasComposer":true,"turns":5,"lastText":"0.1.0"}` →
+`{"status":"ok","answer":"0.1.0","elapsedMs":4314}`。
+
+宿主仍需再重启一次，这次修复才会在 `subagent_zcode` 链路里生效。

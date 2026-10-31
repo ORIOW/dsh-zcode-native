@@ -32,7 +32,14 @@ function makeFakeCdp(options = {}) {
       // A detached renderer swallows Runtime.evaluate and never answers — the
       // measured hang this test pins down.
       if (options.hang) return new Promise(() => {})
-      if (value === expr.probe) return { busy: state.busy, hasComposer: true, turns: state.turns.length }
+      if (value === expr.probe) {
+        return {
+          busy: state.busy,
+          hasComposer: true,
+          turns: state.turns.length,
+          lastText: state.turns.length > 0 ? state.turns[state.turns.length - 1] : '',
+        }
+      }
       if (value === expr.focus) return true
       if (value === expr.composerText) return state.composer
       if (value === expr.clickSend) {
@@ -52,7 +59,15 @@ function makeFakeCdp(options = {}) {
         return true
       }
       if (value === expr.isBusy) return state.busy
+      // The state machine reads the LAST turn — the one our prompt just made.
+      // The rendered list may shrink underneath it (see the unmount test).
+      if (value === expr.lastTurn) {
+        options.onSample?.(state)
+        const last = state.turns.length > 0 ? state.turns[state.turns.length - 1] : ''
+        return { present: state.turns.length > 0, turns: state.turns.length, text: last, busy: state.busy }
+      }
       if (typeof value === 'string' && value.includes('group/assistant-row')) {
+        // Diagnostic-only index read, kept so a probe can pin the drift.
         const index = Number(/turns\[(\d+)\]/.exec(value)?.[1] ?? -1)
         options.onSample?.(state)
         const turn = state.turns[index]
@@ -168,16 +183,35 @@ test('no-new-turn: turn count never grows after the click', async () => {
   assert.equal(state.sendClicks, 1, 'the click itself did happen')
 })
 
-test('normal path: the answer is read from turns[before], not the last turn', async () => {
+test('normal path: the answer is the last turn, and the session is released', async () => {
   const { outcome, state } = await runWithFake(
-    { onSend: startGeneration({ extraTurns: 1, answer: 'REAL-ANSWER' }), onSample: streamSamples },
+    { onSend: startGeneration({ answer: 'REAL-ANSWER' }), onSample: streamSamples },
     { debugPort: 9333 },
   )
   assert.equal(outcome.ok, true)
   assert.equal(outcome.value.status, 'ok')
-  assert.equal(outcome.value.answer, 'REAL-ANSWER', 'must sample turns[before], not turns[length-1] (TRAP-LAST-TURN)')
+  assert.equal(outcome.value.answer, 'REAL-ANSWER')
   assert.equal(typeof outcome.value.elapsedMs, 'number')
   assert.equal(state.disposed, 1, 'the CDP session is disposed exactly once')
+})
+
+test('a shrinking turn list must not read as "not sent" or hang the read', async () => {
+  // Measured 2026-11-01: the same conversation rendered 3–5 assistant turns,
+  // because ZCode unmounts older ones while a new one streams. A count/index
+  // baseline taken before the click then yields either a phantom no-new-turn
+  // (in the host: three wedged child slots) or an index that never resolves.
+  const onSend = (state) => {
+    startGeneration({ answer: 'REAL-ANSWER' })(state)
+    state.turns.shift() // the oldest turn is unmounted: the count does NOT grow
+    state.answerIndex -= 1
+  }
+  const { outcome } = await runWithFake(
+    { turns: ['OLDEST TURN', 'PRE-EXISTING TURN'], onSend, onSample: streamSamples },
+    { debugPort: 9333 },
+  )
+  assert.equal(outcome.ok, true, `expected an answer, got ${outcome.error?.code ?? outcome.value.status}`)
+  assert.equal(outcome.value.status, 'ok')
+  assert.equal(outcome.value.answer, 'REAL-ANSWER')
 })
 
 test('abort: asking ZCode to stop is part of cancelling, not just settling', async () => {

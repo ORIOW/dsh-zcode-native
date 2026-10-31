@@ -48,3 +48,7 @@ tests 32  pass 32  fail 0
 任务要求不改 test/，但 host-route.test.mjs 与本任务天然冲突两处，做了最小修改：
 1. 临时目录拷贝清单加 `ask.js`（index.js 新 import 了它，不拷则模块加载直接失败）；
 2. `routes.length === 1` 断言改为 2 并补充 /ask 路径断言（任务要求加第二条路由）。其余 18 条断言原样保留、全部通过。
+
+> **2026-11-01 修订**：第 5 步「按索引取 `turns[before]`（不是最后一个）」已被证伪——
+> ZCode 会在新回合生成期间卸载旧回合，渲染数在 3–5 间浮动，索引地址会越界。现行实现改为
+> 读**最后一个 turn**，见 `docs/zcode-native/M4-DONE.md` 第 7 节。
