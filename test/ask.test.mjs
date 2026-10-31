@@ -253,5 +253,10 @@ test('a hung CDP evaluate fails as cdp-timeout instead of waiting forever', asyn
   assert.equal(outcome.error.code, 'cdp-timeout')
   // The real timer, not the fake clock: the guard must fire on its own.
   assert.ok(wallClock < 5000, `cdp-timeout must fire promptly, took ${wallClock}ms`)
+  // The configured budget must reach the timer. When the call sites forgot the
+  // argument, `setTimeout(fn, undefined)` fired at 0ms and the diagnostic read
+  // "within undefinedms" — fast enough to look like a healthy guard.
+  assert.match(outcome.error.message, /within 50ms/)
+  assert.doesNotMatch(outcome.error.message, /undefined/)
   assert.equal(state.disposed, 1, 'the CDP session must still be released after a timeout')
 })
