@@ -146,3 +146,39 @@ project`：分别在「发送瞬间切换」和「读答案过程中切换」两
 派活前请确认 ZCode 停在目标任务的那个会话上（`node probe/guard-9222.mjs` 的
 `headerText` 就是它），并在 child 跑完之前不要切走。这是**用户侧的使用前提**，插件无法
 推断「你想问哪个项目」；它能做的是发现中途被切走时立刻失败，而不是拿错答案当结果。
+
+## 9. 宿主内终验（2026-11-01 01:07 加载的版本）
+
+加载确认：harness.log 新的 `[zcode-native] loaded` = `2026-10-31T17:07:39.285Z`（本地
+01:07:39），晚于 `lib/ask.js` 的 mtime `2026-11-01T00:49:28`。`probe/guard-9222.mjs`
+报 `headerText` = `make zcdoe plugin编码任务`、`composerText` 空、`hasStop:false`。
+
+派活（验收标准是父代理收到的结算文本，不是工具返回值）：
+
+| 顺序 | child | 结算文本 | 说明 |
+| --- | --- | --- | --- |
+| 1 | `zcode-73c661a4` | `0.1.0` | 与 `package.json` 的 `"version": "0.1.0"` 一致 |
+| 2 | `zcode-09c00351` | `0.1.0` | 连续派活，未出现槽位耗尽 |
+| 3 | `zcode-54401fd7` | `1 … 5000` 完整 | 长流没有被提前判成"已完成" |
+
+第 1 次派活时真实撞上了缺陷 3 的场景：派出后 DOM 是 7 个 assistant-turn、新的那个还是
+空的、`busy:true`；结算后变成 6 个——最早的回合被 ZCode 卸载了。旧实现要么在这里报假
+`no-new-turn`，要么按 `turns[before]` 读到一个已经消失的索引然后空转到 600 秒；新实现
+读最后一个 turn，一次拿到 `0.1.0`。
+
+发现一个问题：**外部后端子代理在 DSH 界面里没有可点的"停止"**（`subagent_zcode` 的
+child 只显示已完成状态），所以宿主内无法用 UI 触发一次真实取消。取消语义因此按宿主
+实际走的路径验证——`provider.start()` → 2.5s → `dispose()`，这正是 `ZcodeSubagentProvider`
+被中止时宿主调用的那个方法：
+
+```
+result: {"stopReason":"aborted","disposeMs":1060,"output":0}
+post-dispose busy samples: idle        # 0.5s 后 ZCode 侧已空闲
+next ask: {"status":"ok","answer":"OK","elapsedMs":3320}
+```
+
+`dispose()` 1.06s 返回（其中含点 `停止生成` 与轮询），ZCode 侧在 0.5s 内 `hasStop` 变
+false，紧接着的 `ask()` 正常完成——修复前这里是"4 分钟后 `hasStop` 仍为 true、下一次派活
+撞 `busy`"。
+
+M4 的四个验收点至此都有证据：派活结算、连续派活、真实输出不丢、取消真的停下 ZCode。
