@@ -114,3 +114,35 @@ read`：假 CDP 在发送时移除最早一个 turn（计数不增长，模拟�
 `{"status":"ok","answer":"0.1.0","elapsedMs":4314}`。
 
 宿主仍需再重启一次，这次修复才会在 `subagent_zcode` 链路里生效。
+
+## 8. 第四处修正：会话身份（ZCode 被切到别的项目）
+
+用户在 ZCode 里**同时开着多个项目的会话**，而 composer 永远属于当前可见的那一个。
+实测（2026-11-01）：prompt 插进去的瞬间用户切到了另一个工作区的会话，于是这条 child
+的答案是「本项目根目录（工作区）是空的，不存在 package.json」——对一个确实有
+`package.json` 的工作区。插件这边看不到任何异常：pre-flight 通过、发送通过、读到了
+一个稳定文本，`ask()` 以 `ok` 结算。
+
+修法（`lib/ask.js`）：
+
+- 新增 `headerOf` 表达式，取拖拽区里那个项目名标题（`app-region:drag`、高 40–60、
+  宽 > 600 的那个 div）——这是 ZCode 唯一稳定暴露的会话身份；
+- `expr.probe` 与 `expr.lastTurn` 都带上 `header`；
+- 新增 `assertSameSession(headerBefore, observed)`：发送前记下 header，发送后每次采样
+  都比对，不一致立刻抛 `AskError('session-changed')`，不再读别的项目的 turn，也不
+  再空转到 `askTimeoutMs` 把宿主槽位占死；
+- **不点** `停止生成`：切换之后那个按钮属于用户在另一个会话里的活儿，不该由插件点。
+
+测试 52/52。新增用例 `a session switch mid-ask fails fast instead of reading another
+project`：分别在「发送瞬间切换」和「读答案过程中切换」两种时序下断言
+`session-changed`、且 `stopClicks === 0`。
+
+真机复核：`expr.probe` 在真实页面上返回
+`{"busy":false,"hasComposer":true,"turns":3,... ,"header":"读取 package.json 的 version 字段"}`
+——当前 ZCode 停在**另一个会话**，其工作区是
+`/Users/dengjiawei/.zcode/workspace/draft-de9961b6-.../`（空目录），所以那条 `ok` 回答
+讲的是「工作区为空」。这正好印证了本节的问题。
+
+派活前请确认 ZCode 停在目标任务的那个会话上（`node probe/guard-9222.mjs` 的
+`headerText` 就是它），并在 child 跑完之前不要切走。这是**用户侧的使用前提**，插件无法
+推断「你想问哪个项目」；它能做的是发现中途被切走时立刻失败，而不是拿错答案当结果。

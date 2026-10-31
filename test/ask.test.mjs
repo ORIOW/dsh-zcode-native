@@ -19,6 +19,8 @@ function makeFakeCdp(options = {}) {
     turns: options.turns ?? ['PRE-EXISTING TURN'],
     busy: options.busy ?? false,
     sendButton: options.sendButton ?? true,
+    /** The open project's name, as the drag-region header renders it. */
+    header: options.header ?? 'make zcdoe plugin编码任务',
     sendClicks: 0,
     stopClicks: 0,
     keyEvents: [],
@@ -38,6 +40,7 @@ function makeFakeCdp(options = {}) {
           hasComposer: true,
           turns: state.turns.length,
           lastText: state.turns.length > 0 ? state.turns[state.turns.length - 1] : '',
+          header: state.header,
         }
       }
       if (value === expr.focus) return true
@@ -64,7 +67,7 @@ function makeFakeCdp(options = {}) {
       if (value === expr.lastTurn) {
         options.onSample?.(state)
         const last = state.turns.length > 0 ? state.turns[state.turns.length - 1] : ''
-        return { present: state.turns.length > 0, turns: state.turns.length, text: last, busy: state.busy }
+        return { present: state.turns.length > 0, turns: state.turns.length, text: last, busy: state.busy, header: state.header }
       }
       if (typeof value === 'string' && value.includes('group/assistant-row')) {
         // Diagnostic-only index read, kept so a probe can pin the drift.
@@ -212,6 +215,44 @@ test('a shrinking turn list must not read as "not sent" or hang the read', async
   assert.equal(outcome.ok, true, `expected an answer, got ${outcome.error?.code ?? outcome.value.status}`)
   assert.equal(outcome.value.status, 'ok')
   assert.equal(outcome.value.answer, 'REAL-ANSWER')
+})
+
+test('a session switch mid-ask fails fast instead of reading another project', async () => {
+  // Measured 2026-11-01: the user switched ZCode to another workspace's session
+  // right as the prompt was inserted, and the child answered "this workspace is
+  // empty" for a workspace that does have a package.json. The header is the only
+  // identity the app exposes, so a change in it voids the dispatch.
+  const switchedOnSend = await runWithFake(
+    {
+      onSend: (state) => {
+        startGeneration({ busySamples: 1e9 })(state)
+        state.header = '另一个工作区'
+      },
+      onSample: streamSamples,
+    },
+    { debugPort: 9333 },
+  )
+  assert.equal(switchedOnSend.outcome.ok, false, 'a switch must not be reported as an answer')
+  assert.equal(switchedOnSend.outcome.error.code, 'session-changed')
+  assert.match(switchedOnSend.outcome.error.message, /另一个工作区/)
+  assert.equal(switchedOnSend.state.stopClicks, 0, 'never click 停止生成 in a session that is no longer ours')
+
+  // The same must hold when the switch lands later, while the answer is read.
+  let samples = 0
+  const switchedWhileReading = await runWithFake(
+    {
+      onSend: startGeneration({ busySamples: 1e9 }),
+      onSample: (state) => {
+        samples += 1
+        streamSamples(state)
+        if (samples >= 2) state.header = '另一个工作区'
+      },
+    },
+    { debugPort: 9333 },
+  )
+  assert.equal(switchedWhileReading.outcome.ok, false)
+  assert.equal(switchedWhileReading.outcome.error.code, 'session-changed')
+  assert.equal(switchedWhileReading.state.stopClicks, 0)
 })
 
 test('abort: asking ZCode to stop is part of cancelling, not just settling', async () => {
