@@ -32,7 +32,33 @@
   argv 解析器拒绝（报 `bad option: --remote-debugging-port`），端口不会开。
   也可以用仓库自带的 `scripts/zcode-debug.sh`（默认端口 9222，会自动退旧实例再启动）。
 
-## 安装与挂载
+## 安装
+
+三种装法，按场景选一条。装完都要**重启 DSH Desktop**（host 半身不热重载）。
+
+### A. 在 DSH 界面里装（最省事，无需克隆）
+
+设置 → 插件 → 安装插件，粘贴：
+
+```
+github:ORIOW/dsh-zcode-native#v0.1.0
+```
+
+面板会装依赖、把它选进 `dsh.profile.bundles`，并按包内 `dsh.bundle.patch` 声明的
+`cordis.patch.yml` 插入插件条目。`#v0.1.0` 是 tag；想让版本彻底钉死，换成本次
+Release 页上那个提交 SHA（`github:ORIOW/dsh-zcode-native#<sha>`）——tag 可以被移动，
+SHA 不能。
+
+同一段字符串也是 CLI 命令的后半截：
+
+```bash
+dsh plugin --profile web add "github:ORIOW/dsh-zcode-native#v0.1.0"
+```
+
+`dsh plugin` 只是把参数转发给 profile 目录里的 pnpm，**它只装依赖**：装完要在插件页
+把 `dsh-zcode-native` 勾上启用，否则不会加载。界面里的安装对话框则两者都做。
+
+### B. 本地检出 + 挂载脚本（开发用：改代码能立刻看到）
 
 插件以 `link:` 依赖的方式挂进 DSH 的 profile（`$DSH_HOME/profiles/web`）：
 
@@ -50,6 +76,11 @@
 `cordis.patch.yml`，`id: zcode-native`）。
 
 完成后重启 DSH Desktop，插件即生效（设置页出现「ZCode Native」卡片）。
+
+### C. 压缩包 / 本地绝对路径
+
+安装对话框同样接受 `.tgz` 压缩包和本地绝对路径（`/Users/you/code/dsh-zcode-native`）。
+注意这两条装出来的是**拷贝**：改了代码不会生效，得重新装一遍。要边改边看请走 B。
 
 ## 配置项
 
@@ -103,6 +134,26 @@ composer 只属于当前可见的那一个。插件在发送前记下标题栏�
 DSH 界面右侧边栏（Subagents / Tasks 旁）出现「ZCode」tab：账号、套餐到期
 倒计时、余额、客户端版本与可达性、catalog 模板数；底部有更新时间与手动刷新
 按钮。可在设置卡里关掉。
+
+## 用法示例
+
+装好之后不用记 API，在 DSH 里正常说话就行，模型会自己调 `subagent_zcode`（也可以直接打
+`POST /plugins/dsh-zcode-native/ask`）：
+
+> 用 ZCode 查一下 `~/Projects/foo` 里 `pnpm test` 为什么在第 3 个用例挂掉，把根因和改法带回来。
+
+> 把这个仓库的 `lib/ask.js` 通读一遍，列出所有会抛错的分支和它们的错误码。
+
+三条硬规则——**ZCode 看不到这个对话**：
+
+1. **prompt 必须自包含**：路径、仓库位置、验收标准都写全，别写「上面那个文件」。
+2. **先让 ZCode 停在目标项目的会话上**：它可能同时开着好几个项目的会话，composer 只属于
+   当前可见那一个。插件在发送前记下标题栏，中途被切走会立刻以 `session-changed` 失败，
+   而不是把别的项目的答案端回来。
+3. **一次只派一件**：插件内部串行，ZCode 正在生成时新任务直接 `busy`。
+
+默认最多等 10 分钟（`askTimeoutMs` 可调）。想放弃就取消——取消会真的点 ZCode 的
+`停止生成`，不会留下一个空转的生成把后续派活全堵死。
 
 ## 安全边界
 
