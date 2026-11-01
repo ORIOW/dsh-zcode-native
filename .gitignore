@@ -5,3 +5,6 @@ zcode-assets-*
 probe/
 .env
 coverage/
+
+# ZCode writes its per-project config here when it works in this directory
+.zcode/
