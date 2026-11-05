@@ -426,3 +426,57 @@ test('log: a cancel reports that the app was released, and whether it went idle'
   assert.match(release, /clicked=true/)
   assert.match(release, /idle=true/)
 })
+
+test('launch hook: a dead port makes ask start ZCode itself and retry the attach', async () => {
+  const { cdp } = makeFakeCdp({ composer: '', onSend: startGeneration({ answer: '已启动' }), onSample: streamSamples })
+  const clock = makeClock()
+  let attachCalls = 0
+  const ensured = []
+  const outcome = await ask({ debugPort: 9222 }, PROMPT, {
+    attachCdp: async (port) => {
+      attachCalls += 1
+      if (attachCalls === 1) throw new Error(`CDP: connect ECONNREFUSED 127.0.0.1:${port}`)
+      return cdp
+    },
+    ensureRunning: async (port) => {
+      ensured.push(port)
+      return { launched: true, restarted: false, executablePath: 'C:\\Program Files\\ZCode\\ZCode.exe' }
+    },
+    sleep: clock.sleep,
+    now: clock.now,
+  })
+  assert.equal(outcome.status, 'ok')
+  assert.equal(outcome.answer, '已启动')
+  assert.equal(attachCalls, 2, 'attach, launch, attach again')
+  assert.deepEqual(ensured, [9222])
+  assert.ok(
+    logLines.some((line) => line.includes('ask launch') && line.includes('port=9222') && line.includes('launched=true')),
+    'the launch must be visible in the lifecycle log',
+  )
+})
+
+test('launch hook: a launch that fails is reported as zcode-not-running, not a raw attach error', async () => {
+  const clock = makeClock()
+  let attachCalls = 0
+  const outcome = await ask({ debugPort: 9222 }, PROMPT, {
+    attachCdp: async (port) => {
+      attachCalls += 1
+      throw new Error(`CDP: connect ECONNREFUSED 127.0.0.1:${port}`)
+    },
+    ensureRunning: async () => {
+      const error = new Error('could not find the ZCode executable')
+      error.code = 'executable-not-found'
+      throw error
+    },
+    sleep: clock.sleep,
+    now: clock.now,
+  }).then(
+    (value) => ({ ok: true, value }),
+    (error) => ({ ok: false, error }),
+  )
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.error.code, 'zcode-not-running')
+  assert.match(outcome.error.message, /127\.0\.0\.1:9222/)
+  assert.match(outcome.error.message, /executable-not-found/)
+  assert.equal(attachCalls, 1, 'no pointless retry after the launch failed')
+})

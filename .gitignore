@@ -8,3 +8,6 @@ coverage/
 
 # ZCode writes its per-project config here when it works in this directory
 .zcode/
+
+# DSH workspace state (skills etc.) — not part of the plugin
+.dsh/

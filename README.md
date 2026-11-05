@@ -21,16 +21,26 @@
 
 ## 前置条件
 
-- macOS（其他平台未验证）；DSH Desktop（宿主）与 ZCode **3.17.1**。
-- ZCode 必须带 CDP 调试端口启动，且**必须先完全退出（Cmd+Q）再由终端启动**：
+- DSH Desktop（宿主）；ZCode **3.17.1**（macOS 实测；Windows 用 `ZCode.exe`，见
+  [docs/zcode-native/LAUNCH.md](docs/zcode-native/LAUNCH.md)）。
+- ZCode 必须**带 CDP 调试端口**在跑。现在不用自己开终端：`autoLaunch`（默认开）会在
+  端口不通时自动查找并启动它，也可以显式调工具 `zcode_launch`。手动等价命令：
 
   ```bash
   /Applications/ZCode.app/Contents/MacOS/ZCode --remote-debugging-port=9222
   ```
 
   ZCode 是 Electron 单实例应用：已有实例在跑时再启动，命令行参数会被单实例锁 +
-  argv 解析器拒绝（报 `bad option: --remote-debugging-port`），端口不会开。
-  也可以用仓库自带的 `scripts/zcode-debug.sh`（默认端口 9222，会自动退旧实例再启动）。
+  argv 解析器拒绝（报 `bad option: --remote-debugging-port`），端口不会开——所以
+  `zcode_launch` 默认拒绝杀掉你正在用的实例，只有 `restart: true` 才退出重启。
+  仓库自带的 `scripts/zcode-debug.sh`（默认端口 9222，会自动退旧实例再启动）等价于
+  `restart: true` 的手动版。
+
+- ⚠️ **ZCode 3.17.2（2026-11-02 起）在 macOS 上拒绝该开关**：进程能起、窗口能开，
+  但 stderr 报 `bad option: --remote-debugging-port=9222`，端口永不通；打包构建没有
+  替代入口（asar 里只有 `!isPackaged` 才开 9229）。插件这时会以 `launch-timeout`
+  失败并把那句 stderr 放在消息里。macOS 上目前得回退 3.17.1。Windows 未受影响地
+  验证中。
 
 ## 安装
 
@@ -92,6 +102,9 @@ dsh plugin --profile web add "github:ORIOW/dsh-zcode-native#v0.1.0"
 | `debugPort` | number | `9222` | ZCode 的 CDP 调试端口 |
 | `cacheMs` | number | `15000` | `/status` 快照的缓存有效期（毫秒） |
 | `askTimeoutMs` | number | `600000` | 派活等待答案的超时（毫秒） |
+| `autoLaunch` | boolean | `true` | 端口不通时自动查找并启动 ZCode（见「自动启动」） |
+| `zcodeExecutable` | string | `''` | 手动指定可执行文件；留空则按平台候选表 + `PATH` + 目录扫描找 |
+| `launchTimeoutMs` | number | `30000` | 启动后等待 CDP 上线的预算（毫秒） |
 
 ## 能力清单
 
@@ -128,6 +141,29 @@ composer 只属于当前可见的那一个。插件在发送前记下标题栏�
 中途被切走会立刻以 `session-changed` 失败，而不是把别的项目的回答当作结果——
 但它无法推断「你想问哪个项目」。切走之后插件也不会去点 `停止生成`：那时那个
 按钮属于你在另一个会话里的活儿。
+
+### 自动启动：`zcode_launch` 与 `autoLaunch`
+
+端口不通时插件会自己把 ZCode 找出来并带上 `--remote-debugging-port=<port>` 启动，
+不需要你先开终端（issue #1）。两条触发路径：
+
+- **自动**：`subagent_zcode` 派活或 `POST /ask` 发现端口不通 → 启动 → 再 attach，
+  日志里多一行 `[zcode-native] ask launch port=9222 launched=true elapsedMs=...`。
+  由 `autoLaunch`（默认开）控制；启动失败会以 `zcode-not-running` 失败，消息里带
+  子进程的 stderr（例如应用自己拒绝开关时的 `bad option: ...`）。
+- **显式**：工具 `zcode_launch`，两个可选参数 `restart`（先退出旧实例再启动，
+  **会丢掉 ZCode 里未保存的东西**）与 `executablePath`（指定装在哪）。返回
+  `{ launched, alreadyRunning, restarted, port, executablePath, browser }`。
+
+查找顺序：配置里的 `zcodeExecutable` → 平台候选表（Windows
+`%LOCALAPPDATA%\Programs\ZCode\ZCode.exe` 等；macOS
+`/Applications/ZCode.app/Contents/MacOS/ZCode`；Linux `/opt/ZCode/zcode` 等）→
+`where ZCode.exe` / `which zcode` → `%LOCALAPPDATA%\Programs` 下两层的目录扫描。
+全都没找到会报 `executable-not-found`，消息里列出找过的每一处。
+
+**单实例语义**：ZCode 是 Electron 单实例应用，已有实例在跑时新进程的参数会被丢掉。
+所以端口不通 + 已有实例在跑 ⇒ 默认报 `already-running-without-debug-port`（提示你
+退出或传 `restart:true`），绝不偷偷杀掉你正在用的 ZCode。
 
 ### 侧边栏看板
 
@@ -189,8 +225,10 @@ DSH 界面右侧边栏（Subagents / Tasks 旁）出现「ZCode」tab：账号�
 
 - 一次只能服务一个 ZCode 会话：派活串行排队，ZCode 正在生成时会拒绝新任务。
 - 必须由你手动在 ZCode 里打开目标项目，插件不做项目切换。
-- CDP 端口必须由用户带参启动（见前置条件），插件不会替你启动或重启 ZCode。
-- Windows / Linux 未验证。
+- 自动启动能拉起进程，但**能否开出 CDP 端口取决于 ZCode 自己的 argv 处理**：
+  macOS 3.17.2 直接拒绝该开关（见前置条件）；启动失败时插件只报事实，不绕过应用。
+- Windows / Linux 的启动路径未在本机验证（候选表与 `where` 回退是照 Windows 惯例写的，
+  单测覆盖，缺真机证据）。
 - ZCode 界面更新可能使 DOM 选择器失效（选择器均已按 3.17.1 实测校准）。
 
 ## 路线图

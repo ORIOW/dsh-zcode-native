@@ -35,7 +35,7 @@ writeFileSync(
 writeFileSync(
   join(ROOT, 'node_modules', '@deepseek-ai', 'schemastery', 'index.js'),
   `const chain = () => { const o = {}; o.default = (v) => { o._d = v; return o }; o.description = () => o; return o }
-export default { object: (shape) => ({ shape }), number: chain, string: chain }`,
+export default { object: (shape) => ({ shape }), number: chain, string: chain, boolean: chain }`,
 )
 
 // defineTool stub: keeps the shape the host enforces (name/description/
@@ -63,7 +63,7 @@ writeFileSync(
 )
 
 writeFileSync(join(ROOT, 'package.json'), JSON.stringify({ name: 'zn-host-test', type: 'module', private: true }))
-for (const f of ['index.js', 'status.js', 'cdp.js', 'ask.js', 'provider.js']) copyFileSync(join(SRC, f), join(ROOT, 'lib', f))
+for (const f of ['index.js', 'status.js', 'cdp.js', 'ask.js', 'provider.js', 'launch.js']) copyFileSync(join(SRC, f), join(ROOT, 'lib', f))
 
 const mod = await import(pathToFileURL(join(ROOT, 'lib', 'index.js')).href)
 test.after(() => rmSync(ROOT, { recursive: true, force: true }))
@@ -204,8 +204,8 @@ test('M4: provider is registered as "zcode" and carries the config through', () 
 
 test('M4: subagent_zcode is registered with a self-contained prompt contract', () => {
   const ctx = boot()
-  assert.equal(ctx.tools.definitions.length, 1)
-  const tool = ctx.tools.definitions[0]
+  assert.equal(ctx.tools.definitions.length, 2, 'subagent_zcode and zcode_launch')
+  const tool = ctx.tools.definitions.find((entry) => entry.name === 'subagent_zcode')
   assert.equal(tool.name, 'subagent_zcode')
   assert.deepEqual(Object.keys(tool.parameters).sort(), ['description', 'prompt'])
   assert.equal(tool.parameters.description.required, true)
@@ -220,7 +220,7 @@ test('M4: subagent_zcode is registered with a self-contained prompt contract', (
 })
 
 test('M4: execute refuses to run without a calling agent', async () => {
-  const tool = boot().tools.definitions[0]
+  const tool = boot().tools.definitions.find((entry) => entry.name === 'subagent_zcode')
   await assert.rejects(
     () => tool.execute({ description: 'd', prompt: 'p' }, { signal: new AbortController().signal }),
     /requires a calling agent/,
@@ -229,7 +229,7 @@ test('M4: execute refuses to run without a calling agent', async () => {
 
 test('M4: execute hands startActivation the exact host spec', async () => {
   const ctx = boot()
-  const tool = ctx.tools.definitions[0]
+  const tool = ctx.tools.definitions.find((entry) => entry.name === 'subagent_zcode')
   const parent = { id: 'agent-1' }
   const value = await tool.execute(
     { description: '读 README', prompt: '读 README.md 第一行' },
@@ -251,11 +251,32 @@ test('M4: execute hands startActivation the exact host spec', async () => {
 
 test('M4: an aborted exec signal stops before startActivation', async () => {
   const ctx = boot()
-  const tool = ctx.tools.definitions[0]
+  const tool = ctx.tools.definitions.find((entry) => entry.name === 'subagent_zcode')
   const controller = new AbortController()
   controller.abort()
   await assert.rejects(
     () => tool.execute({ description: 'd', prompt: 'p' }, { agent: { id: 'a' }, signal: controller.signal }),
   )
   assert.equal(ctx.subagents.activations.length, 0)
+})
+
+// ---- issue #1: 从会话里启动 ZCode ------------------------------------------
+
+test('launch: zcode_launch exposes the two optional knobs and no surprises', () => {
+  const ctx = boot()
+  const tool = ctx.tools.definitions.find((entry) => entry.name === 'zcode_launch')
+  assert.ok(tool, 'zcode_launch must be registered next to subagent_zcode')
+  assert.deepEqual(Object.keys(tool.parameters).sort(), ['executablePath', 'restart'])
+  // Both are optional: the zero-arg call is the common one.
+  for (const [key, spec] of Object.entries(tool.parameters)) {
+    assert.notEqual(spec.required, true, `${key} must stay optional`)
+    assert.equal(typeof spec.description, 'string')
+  }
+  assert.equal(tool.isConcurrencySafe(), false, 'starting an app is not concurrency safe')
+  assert.deepEqual(
+    Object.keys(tool.output.schema.properties).sort(),
+    ['alreadyRunning', 'browser', 'executablePath', 'launched', 'port', 'restarted'],
+  )
+  assert.equal(tool.output.schema.properties.port.type, 'number')
+  assert.match(tool.description, /ZCode/)
 })

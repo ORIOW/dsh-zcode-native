@@ -37,7 +37,7 @@ if pgrep -f "$APP_BIN" >/dev/null 2>&1; then
 fi
 
 # 3. 启动
-echo "启动 ZCode，调试端口 $PORT，日志 $LOG"
+echo "启动 ZCode，调试端口 ${PORT}，日志 ${LOG}"
 nohup "$APP_BIN" --remote-debugging-port="$PORT" >"$LOG" 2>&1 &
 
 # 4. 等待并验证
