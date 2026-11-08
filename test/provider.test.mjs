@@ -16,13 +16,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  ZCODE_CLI_PROVIDER_NAME,
+  ZCODE_CLI_TOOL_NAME,
   ZCODE_PROVIDER_NAME,
   ZCODE_TOOL_NAME,
   NO_START_CAPABILITIES,
+  ZcodeCliSubagentProvider,
   ZcodeSubagentProvider,
   promptText,
+  toCliResult,
   toResult,
 } from '../lib/provider.js'
+import { CliError } from '../lib/cli.js'
 
 const PROMPT = [{ type: 'text', text: '在 README.md 第一行写标题' }]
 
@@ -209,4 +214,88 @@ test('普通异常也收敛成 diagnostic', async () => {
   await run.dispose()
   assert.equal(result.stopReason, 'error')
   assert.match(result.diagnostic, /ECONNREFUSED 127\.0\.0\.1:9222/)
+})
+
+// ---- CLI 后端 ------------------------------------------------------------
+
+test('cli provider names are distinct from the CDP backend', () => {
+  assert.equal(ZCODE_CLI_PROVIDER_NAME, 'zcode-cli')
+  assert.equal(ZCODE_CLI_TOOL_NAME, 'subagent_zcode_cli')
+  const provider = new ZcodeCliSubagentProvider(ZCODE_CLI_PROVIDER_NAME)
+  assert.equal(provider.name, 'zcode-cli')
+  assert.equal(provider.inheritsParentContext, false)
+  assert.deepEqual(provider.capabilities, NO_START_CAPABILITIES)
+})
+
+test('cli provider: a clean run settles completed, with the ANSI stripped', async () => {
+  const seen = []
+  const provider = new ZcodeCliSubagentProvider(ZCODE_CLI_PROVIDER_NAME, {
+    timeoutMs: 1000,
+    runCli: async (config, prompt) => {
+      seen.push({ config, prompt })
+      return { status: 'ok', text: '\u001b[32mOK\u001b[0m', exitCode: 0, elapsedMs: 12 }
+    },
+  })
+  const handle = provider.start({ prompt: PROMPT, cwd: '/tmp/ws' })
+  const result = await handle.result
+  assert.deepEqual(result, { output: [{ type: 'text', text: 'OK' }], stopReason: 'completed' })
+  assert.equal(seen[0].prompt, '在 README.md 第一行写标题')
+  assert.equal(seen[0].config.cwd, '/tmp/ws')
+  assert.equal(seen[0].config.timeoutMs, 1000)
+  assert.match(handle.id, /^zcode-cli-/)
+})
+
+test('cli provider: a nonzero exit is an error whose diagnostic keeps the stderr tail', async () => {
+  const provider = new ZcodeCliSubagentProvider(ZCODE_CLI_PROVIDER_NAME, {
+    runCli: async () => {
+      throw new CliError('cli-exit', 'zcode cli: exit code 1 — the cli said: [1113][余额不足]')
+    },
+  })
+  const result = await provider.start({ prompt: PROMPT }).result
+  assert.equal(result.stopReason, 'error')
+  assert.deepEqual(result.output, [])
+  assert.match(result.diagnostic, /^zcode-cli: cli-exit: /)
+  assert.match(result.diagnostic, /\[1113\]/)
+})
+
+test('cli provider: dispose aborts the child and settles as aborted', async () => {
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  let seenSignal
+  const provider = new ZcodeCliSubagentProvider(ZCODE_CLI_PROVIDER_NAME, {
+    runCli: async (config) => {
+      seenSignal = config.signal
+      await gate
+      throw new CliError('cli-aborted', 'zcode cli: killed by SIGTERM')
+    },
+  })
+  const handle = provider.start({ prompt: PROMPT })
+  await handle.dispose()
+  release()
+  const result = await handle.result
+  assert.equal(seenSignal.aborted, true)
+  assert.equal(result.stopReason, 'aborted')
+  assert.equal(result.diagnostic, undefined)
+})
+
+test('cli provider: an empty prompt never reaches the CLI', async () => {
+  let called = 0
+  const provider = new ZcodeCliSubagentProvider(ZCODE_CLI_PROVIDER_NAME, {
+    runCli: async () => {
+      called += 1
+      return { status: 'ok', text: 'x', exitCode: 0, elapsedMs: 1 }
+    },
+  })
+  const result = await provider.start({ prompt: [] }).result
+  assert.equal(called, 0)
+  assert.equal(result.stopReason, 'error')
+  assert.match(result.diagnostic, /prompt was empty/)
+})
+
+test('cli provider: exit code 0 with an empty stdout is an error, not an empty answer', () => {
+  const result = toCliResult({ status: 'ok', text: '  \n' }, 1000)
+  assert.equal(result.stopReason, 'error')
+  assert.match(result.diagnostic, /printed no answer/)
 })

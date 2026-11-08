@@ -63,7 +63,7 @@ writeFileSync(
 )
 
 writeFileSync(join(ROOT, 'package.json'), JSON.stringify({ name: 'zn-host-test', type: 'module', private: true }))
-for (const f of ['index.js', 'status.js', 'cdp.js', 'ask.js', 'provider.js', 'launch.js']) copyFileSync(join(SRC, f), join(ROOT, 'lib', f))
+for (const f of ['index.js', 'status.js', 'cdp.js', 'ask.js', 'provider.js', 'launch.js', 'cli.js']) copyFileSync(join(SRC, f), join(ROOT, 'lib', f))
 
 const mod = await import(pathToFileURL(join(ROOT, 'lib', 'index.js')).href)
 test.after(() => rmSync(ROOT, { recursive: true, force: true }))
@@ -192,8 +192,8 @@ test('cacheMs serves the second call from cache', async () => {
 
 test('M4: provider is registered as "zcode" and carries the config through', () => {
   const ctx = boot({ debugPort: 9222, cacheMs: 15000, askTimeoutMs: 12345 })
-  assert.equal(ctx.subagents.providers.length, 1)
-  const provider = ctx.subagents.providers[0]
+  assert.equal(ctx.subagents.providers.length, 2, 'CDP backend and CLI backend')
+  const provider = ctx.subagents.providers.find((entry) => entry.name === 'zcode')
   assert.equal(provider.name, 'zcode')
   assert.equal(provider.prepareContinuable, undefined, '有 prepareContinuable 宿主会当 local 后端')
   assert.equal(provider.capabilities.depthLimit, false)
@@ -204,7 +204,7 @@ test('M4: provider is registered as "zcode" and carries the config through', () 
 
 test('M4: subagent_zcode is registered with a self-contained prompt contract', () => {
   const ctx = boot()
-  assert.equal(ctx.tools.definitions.length, 2, 'subagent_zcode and zcode_launch')
+  assert.equal(ctx.tools.definitions.length, 3, 'subagent_zcode, subagent_zcode_cli and zcode_launch')
   const tool = ctx.tools.definitions.find((entry) => entry.name === 'subagent_zcode')
   assert.equal(tool.name, 'subagent_zcode')
   assert.deepEqual(Object.keys(tool.parameters).sort(), ['description', 'prompt'])
@@ -279,4 +279,44 @@ test('launch: zcode_launch exposes the two optional knobs and no surprises', () 
   )
   assert.equal(tool.output.schema.properties.port.type, 'number')
   assert.match(tool.description, /ZCode/)
+})
+
+// ---- CLI 后端（ZCode 3.17.2 没有 CDP 时的替代通道） -----------------------
+
+test('cli backend: a second provider and a second delegation tool are registered', () => {
+  const ctx = boot({ cliTimeoutMs: 4321 })
+  const cli = ctx.subagents.providers.find((entry) => entry.name === 'zcode-cli')
+  assert.ok(cli, 'zcode-cli provider must be registered')
+  assert.equal(cli.prepareContinuable, undefined)
+  assert.equal(cli.capabilities.depthLimit, false)
+  assert.equal(cli.inheritsParentContext, false)
+  assert.equal(cli.options.timeoutMs, 4321)
+  assert.equal(cli.options.entryPath, undefined, 'empty cliEntry means discover')
+})
+
+test('cli backend: cliEnabled false removes the provider and its tool, leaving M4 untouched', () => {
+  const ctx = boot({ cliEnabled: false })
+  assert.deepEqual(ctx.subagents.providers.map((entry) => entry.name), ['zcode'])
+  assert.deepEqual(
+    ctx.tools.definitions.map((entry) => entry.name).sort(),
+    ['subagent_zcode', 'zcode_launch'],
+  )
+})
+
+test('cli backend: subagent_zcode_cli routes to the zcode-cli provider', async () => {
+  const ctx = boot()
+  const tool = ctx.tools.definitions.find((entry) => entry.name === 'subagent_zcode_cli')
+  assert.deepEqual(Object.keys(tool.parameters).sort(), ['description', 'prompt'])
+  assert.match(tool.description, /no debug port/)
+  assert.match(tool.description, /zcode login/)
+  const value = await tool.execute(
+    { description: '跑一遍测试', prompt: '在本仓库跑 node --test' },
+    { agent: { id: 'agent-2' }, signal: new AbortController().signal },
+  )
+  assert.deepEqual(value, { kind: 'activation', subagentId: 'zcode-test-child' })
+  const spec = ctx.subagents.activations[0]
+  assert.equal(spec.provider, 'zcode-cli')
+  for (const key of ['agentOptions', 'agentPreset', 'outputSchema', 'maxDepth']) {
+    assert.equal(spec.request[key], undefined, `${key} must not be forwarded to an external backend`)
+  }
 })

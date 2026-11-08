@@ -105,6 +105,9 @@ dsh plugin --profile web add "github:ORIOW/dsh-zcode-native#v0.1.0"
 | `autoLaunch` | boolean | `true` | 端口不通时自动查找并启动 ZCode（见「自动启动」） |
 | `zcodeExecutable` | string | `''` | 手动指定可执行文件；留空则按平台候选表 + `PATH` + 目录扫描找 |
 | `launchTimeoutMs` | number | `30000` | 启动后等待 CDP 上线的预算（毫秒） |
+| `cliEnabled` | boolean | `true` | 注册 CLI 后端（provider `zcode-cli` + 工具 `subagent_zcode_cli`）；`false` 就退回只有 CDP 的形态 |
+| `cliEntry` | string | `''` | `zcode.cjs` 的绝对路径；留空按安装位置自动找 |
+| `cliTimeoutMs` | number | `600000` | 一次 CLI 派活的超时（毫秒） |
 
 ## 能力清单
 
@@ -141,6 +144,34 @@ composer 只属于当前可见的那一个。插件在发送前记下标题栏�
 中途被切走会立刻以 `session-changed` 失败，而不是把别的项目的回答当作结果——
 但它无法推断「你想问哪个项目」。切走之后插件也不会去点 `停止生成`：那时那个
 按钮属于你在另一个会话里的活儿。
+
+### 两条后端：`subagent_zcode` 与 `subagent_zcode_cli`
+
+ZCode 3.17.2 的打包版在 macOS 上不再接受 `--remote-debugging-port`（`app.asar`
+里唯一开 CDP 的语句在 `!isPackaged` 分支），所以插件同时提供第二条通道：驱动
+ZCode 自带的无头 CLI。
+
+| | `subagent_zcode`（CDP） | `subagent_zcode_cli`（CLI） |
+| --- | --- | --- |
+| 需要 ZCode 窗口 | 是 | 否 |
+| 需要调试端口 | 是（3.17.2 拿不到） | 否 |
+| 工作目录 | ZCode 当前打开的项目 | 传入的 DSH 工作区（自动带 `--cwd`） |
+| 会话 | 复用 ZCode 的 composer，可看到对话历史 | 每次新建 CLI 会话，无历史 |
+| 并发 | 串行（一张 composer） | 串行（共享 `~/.zcode/cli/db`） |
+| 前提 | ZCode 停在目标会话 | 该 ZCode 安装已 `zcode login` 过 |
+| 鉴权 | 与桌面版一致 | 用 CLI 自己的登录态与模型选择 |
+
+CLI 后端的行为边界，都是实测出来的：
+
+- 每次派活起一个 `node <ZCode>/Contents/Resources/glm/zcode.cjs -p <prompt> --cwd <ws> --no-color`
+  子进程；答案就是退出码 0 时的 stdout（去掉 ANSI 与行尾空白）。
+- **不写你的全局配置**：只从入口路径推导 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`
+  并传进去，`credentials.json` / `provider_config.json` 一律只读。
+- 失败带证据：非零退出、超时、abort 三种都把最后 4 KB stderr 拼进诊断，形如
+  `zcode-cli: cli-exit: zcode cli: exit code 1 — the cli said: …`。
+- 退出码 0 但 stdout 为空会被判成错误（CLI 有时把结论写进 stderr），不会当成
+  空答案投给父代理。
+- 还没登录时 CLI 会自己报 `Select a model before sending a message`，插件原样透出。
 
 ### 自动启动：`zcode_launch` 与 `autoLaunch`
 
