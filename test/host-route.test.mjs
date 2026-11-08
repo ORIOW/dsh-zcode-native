@@ -65,7 +65,34 @@ writeFileSync(
 writeFileSync(join(ROOT, 'package.json'), JSON.stringify({ name: 'zn-host-test', type: 'module', private: true }))
 for (const f of ['index.js', 'status.js', 'cdp.js', 'ask.js', 'provider.js', 'launch.js', 'cli.js', 'checklist.js', 'checklist.md']) copyFileSync(join(SRC, f), join(ROOT, 'lib', f))
 
+// POST /ask 会碰到两个对外说话的叶子模块：CDP（lib/ask.js）与真实的
+// `node <zcode.cjs>` 子进程（lib/cli.js）。两者都不属于单元测试。真实实现原样
+// 留在 *-impl.js，同名入口换成一个记账的壳：路由本身（index.js）、provider 接线
+// 仍然是真源码，壳只让「选了哪个后端、传了什么参数、回了什么响应体」可观测。
+for (const leaf of ['ask', 'cli']) {
+  copyFileSync(join(ROOT, 'lib', `${leaf}.js`), join(ROOT, 'lib', `${leaf}-impl.js`))
+}
+writeFileSync(join(ROOT, 'lib', 'ask.js'), `export * from './ask-impl.js'
+export const calls = []
+export const state = { next: null }
+export async function ask(config, prompt, deps) {
+  calls.push({ config, prompt, deps })
+  if (state.next instanceof Error) throw state.next
+  return state.next ?? { status: 'ok', answer: 'fake cdp answer', elapsedMs: 1 }
+}`)
+writeFileSync(join(ROOT, 'lib', 'cli.js'), `export * from './cli-impl.js'
+export const calls = []
+export const state = { next: null }
+export function runCliPrompt(config, prompt, deps) {
+  calls.push({ config, prompt, deps })
+  if (state.next instanceof Error) return Promise.reject(state.next)
+  return Promise.resolve(state.next ?? { status: 'ok', text: 'fake cli answer', exitCode: 0, elapsedMs: 1 })
+}`)
+
 const mod = await import(pathToFileURL(join(ROOT, 'lib', 'index.js')).href)
+// The very same module instances index.js was just wired against.
+const askStub = await import(pathToFileURL(join(ROOT, 'lib', 'ask.js')).href)
+const cliStub = await import(pathToFileURL(join(ROOT, 'lib', 'cli.js')).href)
 test.after(() => rmSync(ROOT, { recursive: true, force: true }))
 
 /** Minimal cordis-ish ctx: records injects/effects, wires fake services. */
@@ -110,6 +137,31 @@ function fakeCtx() {
   }
 }
 
+/**
+ * A fake request whose body arrives asynchronously, the way a socket delivers it:
+ * readRequestBody() only resolves after the 'end' event, so a synchronously
+ * prepopulated object would not exercise the handler's await.
+ */
+function fakeRequest(method, socket, json) {
+  const handlers = new Map()
+  const payload = Buffer.from(typeof json === 'string' ? json : JSON.stringify(json))
+  const request = {
+    method,
+    socket,
+    destroys: 0,
+    on(event, handler) {
+      handlers.set(event, handler)
+      return request
+    },
+    destroy() { request.destroys += 1 },
+  }
+  setImmediate(() => {
+    handlers.get('data')?.(payload)
+    handlers.get('end')?.()
+  })
+  return request
+}
+
 /** Drive the registered handler with a fake req/res pair. */
 async function call(route, options = {}) {
   const method = options.method ?? 'GET'
@@ -124,8 +176,24 @@ async function call(route, options = {}) {
     end(p) { body = p ?? '' },
   }
   const socket = options.noSocket ? undefined : { remoteAddress }
-  await route.handler({ method, socket }, res)
+  const request = options.json === undefined
+    ? { method, socket }
+    : fakeRequest(method, socket, options.json)
+  await route.handler(request, res)
   return { status, headers, body }
+}
+
+/** The /ask route the plugin registered (routes are exact-kind, matched by path). */
+function askRouteOf(ctx) {
+  return ctx.routes.find((route) => route.path === '/plugins/dsh-zcode-native/ask')
+}
+
+/** Clear what the recording backends saw; called by every /ask route test. */
+function resetBackends() {
+  askStub.calls.length = 0
+  askStub.state.next = null
+  cliStub.calls.length = 0
+  cliStub.state.next = null
 }
 
 /** Apply the plugin once with the given config. */
@@ -343,4 +411,108 @@ test('checklist: zcode_dispatch_checklist hands back the manual procedure', asyn
   assert.equal(rendered.length, 1)
   assert.equal(rendered[0].type, 'text')
   assert.equal(rendered[0].text, value.guide, '渲染就是整份清单，不要截断')
+})
+
+// ---- POST /ask: backend 选择器（缺省 cdp / 显式 cli） -----------------------
+//
+// 这一层只证明「路由把活交给了谁、给了什么参数、回了什么」。CDP 与真实 CLI
+// 子进程由上面那两个记账壳代替，见文件顶部 fixture 的说明。
+
+test('ask route: omitting backend (or "cdp") keeps the old path byte-for-byte', async () => {
+  const ctx = boot({ debugPort: 9333, cacheMs: 15000 })
+  const route = askRouteOf(ctx)
+  const sentinel = { status: 'ok', answer: '老路径的答案 ✓', elapsedMs: 42 }
+
+  for (const body of [{ prompt: '你好' }, { prompt: '你好', backend: 'cdp' }]) {
+    resetBackends()
+    askStub.state.next = sentinel
+    const res = await call(route, { method: 'POST', json: body })
+
+    assert.equal(res.status, 200)
+    // 逐字节：handler 不得重塑 ask() 的结果（不补字段、不改键序、不加 backend）。
+    assert.equal(res.body, JSON.stringify(sentinel), `body=${JSON.stringify(body)} must pass through untouched`)
+    assert.deepEqual(Object.keys(JSON.parse(res.body)).sort(), ['answer', 'elapsedMs', 'status'])
+    assert.equal(cliStub.calls.length, 0, 'the cli backend must not run for the cdp path')
+
+    assert.equal(askStub.calls.length, 1)
+    const [{ config, prompt, deps }] = askStub.calls
+    assert.equal(prompt, '你好')
+    assert.equal(config.debugPort, 9333)
+    // 第三参数与加这个字段之前一样：恰好一个 ensureRunning。
+    assert.deepEqual(Object.keys(deps), ['ensureRunning'])
+    assert.equal(typeof deps.ensureRunning, 'function')
+  }
+})
+
+test('ask route: backend "cli" drives the CLI backend with the configured knobs', async () => {
+  const ctx = boot({ cliEntry: '/opt/zcode/glm/zcode.cjs', cliTimeoutMs: 2222, cliSessionId: 'sess-42' })
+  const route = askRouteOf(ctx)
+  resetBackends()
+  const outcome = { status: 'ok', text: '来自无头进程的答案', exitCode: 0, elapsedMs: 11 }
+  cliStub.state.next = outcome
+
+  const res = await call(route, { method: 'POST', json: { prompt: '跑一遍测试', backend: 'cli' } })
+
+  assert.equal(res.status, 200)
+  assert.deepEqual(JSON.parse(res.body), { ...outcome, backend: 'cli' })
+  assert.equal(askStub.calls.length, 0, 'the cdp backend must not be touched')
+
+  assert.equal(cliStub.calls.length, 1)
+  assert.equal(cliStub.calls[0].prompt, '跑一遍测试')
+  assert.deepEqual(cliStub.calls[0].config, {
+    entryPath: '/opt/zcode/glm/zcode.cjs',
+    cwd: process.cwd(),
+    timeoutMs: 2222,
+    sessionId: 'sess-42',
+  })
+})
+
+test('ask route: backend "cli" with cliEnabled:false answers an error and spawns nothing', async () => {
+  const ctx = boot({ cliEnabled: false })
+  const route = askRouteOf(ctx)
+  resetBackends()
+
+  const res = await call(route, { method: 'POST', json: { prompt: '跑一遍测试', backend: 'cli' } })
+
+  assert.equal(res.status, 200)
+  assert.deepEqual(JSON.parse(res.body), {
+    status: 'error',
+    error: 'cli-disabled: the CLI backend is turned off (cliEnabled: false)',
+    elapsedMs: null,
+    backend: 'cli',
+  })
+  assert.equal(cliStub.calls.length, 0, 'a disabled backend must not reach the CLI process')
+  assert.equal(askStub.calls.length, 0)
+})
+
+test('ask route: a failing CLI backend answers 200 with the stable error shape', async () => {
+  const ctx = boot()
+  const route = askRouteOf(ctx)
+  resetBackends()
+  cliStub.state.next = Object.assign(new Error('no answer within 600000ms'), { code: 'cli-timeout' })
+
+  const res = await call(route, { method: 'POST', json: { prompt: 'p', backend: 'cli' } })
+
+  assert.equal(res.status, 200)
+  assert.deepEqual(JSON.parse(res.body), {
+    status: 'error',
+    error: 'cli-timeout: no answer within 600000ms',
+    elapsedMs: null,
+    backend: 'cli',
+  })
+})
+
+test('ask route: an unknown backend is a 400 and touches neither backend', async () => {
+  const ctx = boot()
+  const route = askRouteOf(ctx)
+  resetBackends()
+
+  for (const backend of ['nope', '', null, 'CDP', 1]) {
+    const res = await call(route, { method: 'POST', json: { prompt: 'p', backend } })
+    assert.equal(res.status, 400, `backend=${JSON.stringify(backend)} must be refused`)
+    assert.deepEqual(JSON.parse(res.body), { error: 'backend must be "cdp" or "cli"' })
+  }
+
+  assert.equal(askStub.calls.length, 0, 'an invalid backend must not reach cdp')
+  assert.equal(cliStub.calls.length, 0, 'an invalid backend must not reach the cli')
 })
