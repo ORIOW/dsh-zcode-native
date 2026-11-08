@@ -48,13 +48,27 @@ subagent_zcode_cli({ description: "读版本", prompt: "读取 package.json，�
 ```
 curl -s -X POST http://127.0.0.1:<webPort>/plugins/dsh-zcode-native/ask \
   -H 'content-type: application/json' \
-  -d '{"prompt":"只回复 OK","backend":"cli"}'
+  -d '{"prompt":"只回复 OK","backend":"cli","cwd":"/abs/path/to/project"}'
 ```
 
 - 缺省或 `"cdp"`：与旧路径逐字节一致（响应体就是 `ask()` 的返回）。
 - `"cli"`：走无头 CLI，响应体是 `{...outcome, backend:'cli'}`。
-- `cliEnabled: false` 时回 `cli-disabled:`，不会 spawn。
-- 其它值：400，两条后端都不会被触达。
+- `cliEnabled: false` 时回 200 与 `{"status":"error","error":"cli-disabled: …","backend":"cli"}`，不会 spawn。
+- 其它值：400 `backend must be "cdp" or "cli"`，两条后端都不会被触达。
+
+**`cwd` 要自己给**（`"cli"` 分支）：工具路径由宿主把父代理的工作目录放进 `request.cwd`，HTTP
+路径没有这层信息。不给就落到宿主进程自己的 cwd，而那是桌面版的
+`~/Library/Application Support/dsh-desktop/launch-root`，一个空目录——CLI 会以为项目是空的。
+传了就必须是存在的绝对目录，否则 400：`cwd must be an absolute path` /
+`cwd does not exist: …` / `cwd is not a directory: …`。
+
+错误面与工具路径不完全一样：HTTP 这里不经过 `provider`，所以不会被加上
+`zcode_dispatch_checklist` 指针；`cli` 分支的失败一律是 200 加
+`{"status":"error","error":"<code>: <msg>","elapsedMs":null,"backend":"cli"}`。
+退出码 0 但 stdout 为空同样按错误处理：`cli-empty-output: the cli printed no answer …`。
+
+客户端中途断开（连接 `close` 且响应还没写完）会中止正在跑的 CLI 子进程（`cli-aborted`）：
+CLI 调用是全局串行的，一次被放弃的请求本来会把后面所有 `subagent_zcode_cli` 一起堵住。
 
 `backend` 这个字段是 `057b252` 引入的。宿主进程只有在**该提交之后重启**才会带这个路由行为；
 重启前用 `backend: "cli"` 会被忽略，请求仍走 CDP（实测：返回 `zcode-not-running: … CDP …`）。
@@ -133,8 +147,8 @@ builtin provider 配置，找不到就报 `无法定位 CLI ZCode Built-in Provi
 | `cli-not-found` | 候选表与 `cliEntry` 都找不到入口 | 已找过的路径列表 |
 | `cli-spawn` | spawn 本身失败（权限、可执行位） | 系统错误消息 |
 | `cli-exit` | 非零退出 | stderr 尾部（≤4 KB） |
-| `cli-timeout` | 超过 `cliTimeoutMs` | 已运行时长与 stderr 尾部 |
-| `cli-aborted` | 父代理取消 | — |
+| `cli-timeout` | 超过 `cliTimeoutMs` | `no answer within <timeoutMs>ms` 与 stderr 尾部 |
+| `cli-aborted` | 父代理取消，或 `/ask` 的客户端断开 | — |
 | `cli-empty-prompt` | prompt 只有空白 | — |
 
 业务层的两种常见错误会原样透出（这是 CLI 自己的话，插件不改写）：
@@ -148,8 +162,8 @@ builtin provider 配置，找不到就报 `无法定位 CLI ZCode Built-in Provi
 - 插件**不写**用户的 `credentials.json`、`provider_config.json`，也不写 `~/.zcode/cli/db`。
   没登录就是没登录，报错原样交给调用方。
 - 所有 CLI 调用串行（共享 `~/.zcode/cli/db`），同一时刻只有一个进程。
-- `cwd` 固定为 DSH 工作区（`process.cwd()`），插件不读子代理请求里的 `cwd`：CLI 的 `--cwd` 决定
-  它能看见哪个项目。
+- `--cwd` 决定 CLI 看得见哪个项目。工具路径用宿主给的 `request.cwd`（父代理工作目录），
+  `/ask` 用 body 里的 `cwd`，都没给才落到宿主进程的 cwd（桌面版的 launch-root，空目录）。
 
 ## 两条都不通时
 
@@ -157,3 +171,12 @@ CDP 起不来、CLI 又没入口或没可用模型时，失败诊断末尾会带
 `call zcode_dispatch_checklist and follow it`，父代理可以调 `zcode_dispatch_checklist` 拿到一份
 人工派活清单（DOM 守卫、composer 清空、取答案的选择器、超时≠失败）。清单不是自动执行器，它把
 步骤交回给调用方。
+
+带指针的失败码只有这几个（`provider.js` 的 `withChecklistHint`）：
+
+| 通道 | 码 |
+|------|-----|
+| CDP | `zcode-not-running`、`launch-timeout` |
+| CLI | `cli-not-found`、`cli-exit`、`cli-spawn` |
+
+`cli-timeout` 与 `cli-aborted` 不带指针：前者通常只是任务太长，后者是调用方自己取消的。

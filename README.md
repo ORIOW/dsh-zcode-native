@@ -114,7 +114,7 @@ dsh plugin --profile web add "github:ORIOW/dsh-zcode-native#v0.1.0"
 
 宿主里共四个工具：`subagent_zcode`（CDP 派活）、`subagent_zcode_cli`（无头 CLI
 派活）、`zcode_launch`（找并启动 ZCode 的调试端口）、`zcode_dispatch_checklist`
-（前两条都够不到时的人工清单）。下面逐项说明。
+（前两条都够不到时的人工清单；`cliEnabled: false` 时这个也只有三个）。下面逐项说明。
 
 ### HTTP 接口（host 半身，仅 loopback，响应带 `cache-control: no-store`）
 
@@ -160,7 +160,7 @@ ZCode 自带的无头 CLI。
 | --- | --- | --- |
 | 需要 ZCode 窗口 | 是 | 否 |
 | 需要调试端口 | 是（3.17.2 拿不到） | 否 |
-| 工作目录 | ZCode 当前打开的项目 | 传入的 DSH 工作区（自动带 `--cwd`） |
+| 工作目录 | ZCode 当前打开的项目 | 工具走父代理工作目录，`/ask` 要自己给 `cwd`（自动带 `--cwd`） |
 | 会话 | 复用 ZCode 的 composer，可看到对话历史 | 每次新建 CLI 会话，无历史 |
 | 并发 | 串行（一张 composer） | 串行（共享 `~/.zcode/cli/db`） |
 | 前提 | ZCode 停在目标会话 | 该 ZCode 安装已 `zcode login` 过 |

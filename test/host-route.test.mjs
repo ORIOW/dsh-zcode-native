@@ -16,7 +16,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync, copyFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, copyFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -171,16 +171,22 @@ async function call(route, options = {}) {
   let status = 0
   let headers = {}
   let body = ''
+  // 真实的 http.ServerResponse 是 EventEmitter：路由的 cli 分支靠 `close` 事件判断
+  // 客户端是否已经走了，所以假 res 也得能发事件，否则那条路径永远测不到。
+  const listeners = new Map()
   const res = {
+    writableEnded: false,
     writeHead(s, h) { status = s; headers = h },
-    end(p) { body = p ?? '' },
+    end(p) { body = p ?? ''; res.writableEnded = true },
+    on(event, handler) { listeners.set(event, handler); return res },
+    emit(event, value) { listeners.get(event)?.(value); return res },
   }
   const socket = options.noSocket ? undefined : { remoteAddress }
   const request = options.json === undefined
     ? { method, socket }
     : fakeRequest(method, socket, options.json)
   await route.handler(request, res)
-  return { status, headers, body }
+  return { status, headers, body, res }
 }
 
 /** The /ask route the plugin registered (routes are exact-kind, matched by path). */
@@ -459,12 +465,13 @@ test('ask route: backend "cli" drives the CLI backend with the configured knobs'
 
   assert.equal(cliStub.calls.length, 1)
   assert.equal(cliStub.calls[0].prompt, '跑一遍测试')
-  assert.deepEqual(cliStub.calls[0].config, {
-    entryPath: '/opt/zcode/glm/zcode.cjs',
-    cwd: process.cwd(),
-    timeoutMs: 2222,
-    sessionId: 'sess-42',
-  })
+  const config = cliStub.calls[0].config
+  assert.equal(config.entryPath, '/opt/zcode/glm/zcode.cjs')
+  assert.equal(config.cwd, process.cwd())
+  assert.equal(config.timeoutMs, 2222)
+  assert.equal(config.sessionId, 'sess-42')
+  // 客户端断开要能中止子进程，所以这里必须是一个真实的 AbortSignal。
+  assert.ok(config.signal instanceof AbortSignal, 'the cli call carries an abort signal')
 })
 
 test('ask route: backend "cli" with cliEnabled:false answers an error and spawns nothing', async () => {
@@ -515,4 +522,96 @@ test('ask route: an unknown backend is a 400 and touches neither backend', async
 
   assert.equal(askStub.calls.length, 0, 'an invalid backend must not reach cdp')
   assert.equal(cliStub.calls.length, 0, 'an invalid backend must not reach the cli')
+})
+
+test('ask route: the cli backend runs where the caller says, not in the host cwd', async () => {
+  const ctx = boot()
+  const route = askRouteOf(ctx)
+  resetBackends()
+  const workdir = mkdtempSync(join(tmpdir(), 'zn-cwd-'))
+  try {
+    const res = await call(route, {
+      method: 'POST',
+      json: { prompt: 'p', backend: 'cli', cwd: workdir },
+    })
+    assert.equal(res.status, 200)
+    // 宿主进程的 cwd 是桌面版的 launch-root（空目录），拿它当工作目录等于让 CLI
+    // 看不见任何项目。调用方给了 cwd 就必须原样传下去。
+    assert.equal(cliStub.calls[0].config.cwd, workdir)
+  } finally {
+    rmSync(workdir, { recursive: true, force: true })
+  }
+})
+
+test('ask route: a cwd that is not an absolute existing directory is a 400', async () => {
+  const ctx = boot()
+  const route = askRouteOf(ctx)
+  resetBackends()
+  const workdir = mkdtempSync(join(tmpdir(), 'zn-cwd-bad-'))
+  const file = join(workdir, 'a-file')
+  writeFileSync(file, 'x')
+  try {
+    for (const [cwd, reason] of [
+      ['relative/path', 'cwd must be an absolute path'],
+      ['', 'cwd must be an absolute path'],
+      [join(workdir, 'missing'), `cwd does not exist: ${join(workdir, 'missing')}`],
+      [file, `cwd is not a directory: ${file}`],
+    ]) {
+      const res = await call(route, { method: 'POST', json: { prompt: 'p', backend: 'cli', cwd } })
+      assert.equal(res.status, 400, `cwd=${JSON.stringify(cwd)} must be refused`)
+      assert.deepEqual(JSON.parse(res.body), { error: reason })
+    }
+    assert.equal(cliStub.calls.length, 0, 'a bad cwd must not reach the CLI')
+  } finally {
+    rmSync(workdir, { recursive: true, force: true })
+  }
+})
+
+test('ask route: an exit code 0 with nothing printed is an error, not an empty answer', async () => {
+  const ctx = boot()
+  const route = askRouteOf(ctx)
+  resetBackends()
+  cliStub.state.next = { status: 'ok', text: '   ', exitCode: 0, elapsedMs: 3 }
+
+  const res = await call(route, { method: 'POST', json: { prompt: 'p', backend: 'cli' } })
+
+  assert.equal(res.status, 200)
+  assert.deepEqual(JSON.parse(res.body), {
+    status: 'error',
+    error: 'cli-empty-output: the cli printed no answer (the reason is usually in stderr)',
+    elapsedMs: 3,
+    backend: 'cli',
+  })
+})
+
+test('ask route: a client that hangs up aborts the cli run instead of holding the queue', async () => {
+  const ctx = boot()
+  const route = askRouteOf(ctx)
+  resetBackends()
+  let release
+  cliStub.state.next = new Promise((resolve) => {
+    release = () => resolve({ status: 'ok', text: 'late', exitCode: 0, elapsedMs: 9 })
+  })
+
+  const listeners = new Map()
+  let ended = false
+  const res = {
+    writableEnded: false,
+    writeHead() {},
+    end() { ended = true; res.writableEnded = true },
+    on(event, handler) { listeners.set(event, handler); return res },
+  }
+  const request = fakeRequest('POST', { remoteAddress: '127.0.0.1' }, { prompt: 'p', backend: 'cli' })
+  const pending = route.handler(request, res)
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const { signal } = cliStub.calls[0].config
+  assert.equal(signal.aborted, false, 'the run starts unaborted')
+  // 客户端走了但 res 还没 end：这正是需要中止子进程的时刻。
+  listeners.get('close')?.()
+  assert.equal(signal.aborted, true, 'hanging up must abort the cli process')
+
+  release()
+  await pending
+  assert.equal(ended, true)
 })

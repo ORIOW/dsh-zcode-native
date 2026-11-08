@@ -76,16 +76,18 @@ ZCode 3.17.2 的打包版在 macOS 上关掉了 CDP：`--remote-debugging-port` 
   `lib/index.js` 注册第二个 provider 与工具 `subagent_zcode_cli`（新增 `cliEnabled` /
   `cliEntry` / `cliTimeoutMs`）。`test/provider.test.mjs` 新增 6 例，`test/host-route.test.mjs`
   新增 3 例（含 `cliEnabled:false` 退回单后端）。
-- 步骤 5：完成（提交 `057b252`）。`POST /plugins/dsh-zcode-native/ask` 接受可选 `body.backend`：
-  缺省或 `"cdp"` 与旧路径逐字节一致（响应体、字段集合都不变），`"cli"` 走
-  `runCliPrompt({ entryPath, cwd: process.cwd(), timeoutMs: cliTimeoutMs, sessionId: cliSessionId })`
-  并回 `{...outcome, backend:'cli'}`，`cliEnabled:false` 回 `cli-disabled:` 不 spawn，其它值 400。
-  `test/host-route.test.mjs` 新增 5 例。
+- 步骤 5：完成（提交 `057b252` + 复核修复）。`POST /plugins/dsh-zcode-native/ask` 接受可选
+  `body.backend`：缺省或 `"cdp"` 与旧路径逐字节一致（响应体、字段集合都不变），`"cli"` 走
+  `runCliPrompt({ entryPath, cwd, timeoutMs, sessionId, signal })` 并回 `{...outcome, backend:'cli'}`，
+  `cliEnabled:false` 回 `cli-disabled:` 不 spawn，其它值 400。复核发现的 `cwd` 缺陷已修：
+  `/ask` 的 cli 分支现在接受 `body.cwd`（必须是存在的绝对目录，否则 400），不再拿宿主进程的
+  launch-root 当工作目录；客户端断开时中止子进程（`AbortSignal` 接到 `close` 事件）；退出码 0
+  但 stdout 为空算 `cli-empty-output` 错误。`test/host-route.test.mjs` 又新增 4 例（cwd 传递、cwd 三种非法值、空输出、断开中止），共 26 例。
 - 步骤 6：完成（`docs/zcode-native/CLI.md`）。入口、三条使用路径、配置项、会话级模型选择、
   失败码表、边界；文档里的命令本机实跑过（`--help` → `zcode 0.17.1`、
   `--resume <会话> -p "只回复 OK"` → `OK` exit 0、`GET /status` 200、`POST /ask backend=cli`
   在未重启的宿主上被忽略并落回 CDP，说明该路由需要重启后生效）。
-- 全套回归：**108/108**。
+- 全套回归：**112/112**（步骤 5 复核修复后）。
 - 真机（provider 层，无会话 id）：`ZcodeCliSubagentProvider.start()` → `zcode-cli-b94617cd-…`，
   `stopReason:error`，诊断 `zcode-cli: cli-exit: … [1113][余额不足或无可用资源包,请充值。]`
   ⇒ provider → CLI → 错误分类这条链在真机上成立。
