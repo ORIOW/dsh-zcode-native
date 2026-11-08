@@ -18,7 +18,7 @@ ZCode 3.17.2 的打包版在 macOS 上关掉了 CDP：`--remote-debugging-port` 
 | 2 | `lib/cli.js`：`discoverCli()` + `runCliPrompt()`，spawn/时钟全注入 | `node --test test/cli.test.mjs` 7 例全过（成功/非零退出/超时/abort/入口缺失/候选表/显式路径） |
 | 3 | 输出解析与诊断（`-p` 文本，stderr 尾巴进 diagnostic） | 录制 fixture 解析测试 + 真机输出一致 |
 | 4 | provider 接线：`zcode-cli` + 工具 `subagent_zcode_cli`，复用 `promptText` 与 `NO_START_CAPABILITIES` | 成功 → `completed`，abort → `aborted`，其它 → `error` + diagnostic |
-| 5 | 配置与路由：`cliEnabled`(true)/`cliEntry`('')/`cliTimeoutMs`(600000)/`cliSessionId`('')，`/ask` 增 `backend`（默认 `cdp`） | host-route 断言 2 个 provider、3 个工具，默认路由逐字节不变 |
+| 5 | 配置与路由：`cliEnabled`(true)/`cliEntry`('')/`cliTimeoutMs`(600000)/`cliSessionId`('')，`/ask` 增 `backend`（默认 `cdp`） | host-route 断言 2 个 provider、4 个工具，默认路由逐字节不变 |
 | 6 | 文档：README「两条后端」+ `docs/zcode-native/CLI.md` | 文档里每条命令本机实跑 |
 | 7 | 回归 + 宿主内终验 | 全套测试通过；重启后派 `subagent_zcode_cli` 的结算与直接跑 CLI 一致 |
 
@@ -76,11 +76,17 @@ ZCode 3.17.2 的打包版在 macOS 上关掉了 CDP：`--remote-debugging-port` 
   `lib/index.js` 注册第二个 provider 与工具 `subagent_zcode_cli`（新增 `cliEnabled` /
   `cliEntry` / `cliTimeoutMs`）。`test/provider.test.mjs` 新增 6 例，`test/host-route.test.mjs`
   新增 3 例（含 `cliEnabled:false` 退回单后端）。
-- 步骤 5（部分）：`cliSessionId`('') 已加，非空时把 `--resume <id>` 插进参数并透传到
-  provider（`test/cli.test.mjs` 新增 1 例断言参数顺序）；`/ask` 的 `backend` 路由未做。
-- 全套回归：**92/92**。
+- 步骤 5：完成（提交 `057b252`）。`POST /plugins/dsh-zcode-native/ask` 接受可选 `body.backend`：
+  缺省或 `"cdp"` 与旧路径逐字节一致（响应体、字段集合都不变），`"cli"` 走
+  `runCliPrompt({ entryPath, cwd: process.cwd(), timeoutMs: cliTimeoutMs, sessionId: cliSessionId })`
+  并回 `{...outcome, backend:'cli'}`，`cliEnabled:false` 回 `cli-disabled:` 不 spawn，其它值 400。
+  `test/host-route.test.mjs` 新增 5 例。
+- 步骤 6：完成（`docs/zcode-native/CLI.md`）。入口、三条使用路径、配置项、会话级模型选择、
+  失败码表、边界；文档里的命令本机实跑过（`--help` → `zcode 0.17.1`、
+  `--resume <会话> -p "只回复 OK"` → `OK` exit 0、`GET /status` 200、`POST /ask backend=cli`
+  在未重启的宿主上被忽略并落回 CDP，说明该路由需要重启后生效）。
+- 全套回归：**108/108**。
 - 真机（provider 层，无会话 id）：`ZcodeCliSubagentProvider.start()` → `zcode-cli-b94617cd-…`，
   `stopReason:error`，诊断 `zcode-cli: cli-exit: … [1113][余额不足或无可用资源包,请充值。]`
   ⇒ provider → CLI → 错误分类这条链在真机上成立。
-- 剩余：步骤 5 的 `/ask` `backend` 路由、步骤 6（`docs/zcode-native/CLI.md`）、
-  步骤 7（宿主内终验，需重启让 host 半身加载新代码）。
+- 剩余：步骤 7（宿主内终验，需重启让 host 半身加载 `057b252` 之后的代码）。

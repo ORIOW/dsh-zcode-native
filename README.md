@@ -177,6 +177,11 @@ CLI 后端的行为边界，都是实测出来的：
 - 退出码 0 但 stdout 为空会被判成错误（CLI 有时把结论写进 stderr），不会当成
   空答案投给父代理。
 - 还没登录时 CLI 会自己报 `Select a model before sending a message`，插件原样透出。
+- `POST /plugins/dsh-zcode-native/ask` 也认后端：body 带 `"backend": "cli"` 就走无头 CLI，
+  缺省或 `"cdp"` 与旧行为逐字节一致，`cliEnabled: false` 时回 `cli-disabled`。
+
+完整说明（入口、配置项、失败码、实跑命令）见
+[docs/zcode-native/CLI.md](docs/zcode-native/CLI.md)。
 
 #### CLI 用哪个模型：由会话决定，所以给一个会话 id
 
