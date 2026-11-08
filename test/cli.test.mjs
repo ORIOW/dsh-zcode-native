@@ -99,6 +99,31 @@ test('cli: a clean run resolves with the trimmed stdout', async () => {
   assert.equal(options.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, MAC_BUILTIN)
 })
 
+test('cli: a session id is resumed, because only the session carries the model choice', async () => {
+  const { spawn, calls } = fakeSpawn((child) => {
+    child.stdout.emit('data', 'OK\n')
+    child.emit('close', 0)
+  })
+
+  await runCliPrompt(
+    { entryPath: MAC_ENTRY, cwd: '/tmp/work', timeoutMs: 5000, sessionId: ' sess_22c77399 ' },
+    '只回复 OK',
+    { spawn, exists: fakeExists([MAC_ENTRY, MAC_BUILTIN]), env: {}, now: () => 0 },
+  )
+
+  const [{ args }] = calls
+  assert.deepEqual(args, [
+    MAC_ENTRY,
+    '--resume',
+    'sess_22c77399',
+    '-p',
+    '只回复 OK',
+    '--cwd',
+    '/tmp/work',
+    '--no-color',
+  ])
+})
+
 test('cli: a nonzero exit is a cli-exit error carrying the stderr tail', async () => {
   const { spawn } = fakeSpawn((child) => {
     child.stderr.emit('data', 'ProviderBusinessError: [1113] 余额不足\n')

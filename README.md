@@ -108,6 +108,7 @@ dsh plugin --profile web add "github:ORIOW/dsh-zcode-native#v0.1.0"
 | `cliEnabled` | boolean | `true` | 注册 CLI 后端（provider `zcode-cli` + 工具 `subagent_zcode_cli`）；`false` 就退回只有 CDP 的形态 |
 | `cliEntry` | string | `''` | `zcode.cjs` 的绝对路径；留空按安装位置自动找 |
 | `cliTimeoutMs` | number | `600000` | 一次 CLI 派活的超时（毫秒） |
+| `cliSessionId` | string | `''` | 要复用的 ZCode 会话 id（界面里可复制）。CLI 只认会话级的模型选择，留空则每次新建会话 |
 
 ## 能力清单
 
@@ -172,6 +173,24 @@ CLI 后端的行为边界，都是实测出来的：
 - 退出码 0 但 stdout 为空会被判成错误（CLI 有时把结论写进 stderr），不会当成
   空答案投给父代理。
 - 还没登录时 CLI 会自己报 `Select a model before sending a message`，插件原样透出。
+
+#### CLI 用哪个模型：由会话决定，所以给一个会话 id
+
+CLI 只认**会话记录里的模型选择**（`session_entry` 里那条 `runtime/model_selection`），
+配置文件里的默认模型、`setting.json` 里的套餐选择都改不动它（2026-11-08 逐项实测）。
+不给会话 id 时 CLI 每次新建会话，就落回账号的默认套餐，可能直接报
+`[1113][余额不足或无可用资源包,请充值。]`。
+
+做法：先在 ZCode 界面里把对话切到想用的模型（例如第三方 provider 的 `mimo-v2.6-flash`），
+复制那条会话的 id，填进配置 `cliSessionId`。之后每次 CLI 派活都会带
+`--resume <id>`，用同一个模型跑。实测输出：
+
+```
+--resume sess_22c77399-… -p "只回复 OK" --cwd <ws>
+→ stdout: OK   exit: 0   （model_usage 记 xiaomi-mimo / mimo-v2.6-flash / completed）
+```
+
+注意 `--resume` 会把这次派活写进那条会话，所以最好是单独建一条专门给插件用的对话。
 
 ### 自动启动：`zcode_launch` 与 `autoLaunch`
 

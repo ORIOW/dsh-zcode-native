@@ -18,7 +18,7 @@ ZCode 3.17.2 的打包版在 macOS 上关掉了 CDP：`--remote-debugging-port` 
 | 2 | `lib/cli.js`：`discoverCli()` + `runCliPrompt()`，spawn/时钟全注入 | `node --test test/cli.test.mjs` 7 例全过（成功/非零退出/超时/abort/入口缺失/候选表/显式路径） |
 | 3 | 输出解析与诊断（`-p` 文本，stderr 尾巴进 diagnostic） | 录制 fixture 解析测试 + 真机输出一致 |
 | 4 | provider 接线：`zcode-cli` + 工具 `subagent_zcode_cli`，复用 `promptText` 与 `NO_START_CAPABILITIES` | 成功 → `completed`，abort → `aborted`，其它 → `error` + diagnostic |
-| 5 | 配置与路由：`cliEnabled`(true)/`cliEntry`('')/`cliTimeoutMs`(600000)，`/ask` 增 `backend`（默认 `cdp`） | host-route 断言 2 个 provider、3 个工具，默认路由逐字节不变 |
+| 5 | 配置与路由：`cliEnabled`(true)/`cliEntry`('')/`cliTimeoutMs`(600000)/`cliSessionId`('')，`/ask` 增 `backend`（默认 `cdp`） | host-route 断言 2 个 provider、3 个工具，默认路由逐字节不变 |
 | 6 | 文档：README「两条后端」+ `docs/zcode-native/CLI.md` | 文档里每条命令本机实跑 |
 | 7 | 回归 + 宿主内终验 | 全套测试通过；重启后派 `subagent_zcode_cli` 的结算与直接跑 CLI 一致 |
 
@@ -27,10 +27,13 @@ ZCode 3.17.2 的打包版在 macOS 上关掉了 CDP：`--remote-debugging-port` 
 1. `zcode login`、`app-server`、`tui` 等子命令都需要 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`，否则报
    `无法定位 CLI ZCode Built-in Provider Config`。该文件在 `<app>/Contents/Resources/config/provider/zcode-builtin.json`。
 2. 每次调用必须带 `--cwd <DSH 工作区>`，否则 CLI 用它自己的默认工作目录。
-3. CLI 的模型选择是 `~/.zcode/v2/provider_config.json`（登录时会打印 `Model selection: …`），
-   不是 `setting.json` 的 `providerFamilyConnectionSelections`，后者改了无效。
-4. 插件**不写**用户全局凭据与模型选择（`credentials.json` / `provider_config.json`）。没登录就让 CLI 的
-   原始错误浮出来（`Select a model before sending a message`）。
+3. 模型选择是**会话级**的：只有 `session_entry` 里那条 `runtime/model_selection` 生效。
+   `provider_config.json` 的 `defaultModelSelection`（`zcode login` 会写，并打印
+   `Model selection: …`）和 `setting.json` 的 `providerFamilyConnectionSelections` 都改不动主回合。
+   要固定模型就给 `--resume <会话 id>`。
+4. 插件**不写**用户全局凭据与模型选择（`credentials.json` / `provider_config.json`），也不写
+   `~/.zcode/cli/db`。没登录或没给会话时就让 CLI 的原始错误浮出来
+   （`Select a model before sending a message` / `[1113]`）。
 5. 共享 `~/.zcode/cli/db`，同一时刻只跑一个 CLI 进程；超时 ≥120 s。
 6. 错误分类只认 stderr + 退出码，解析器要容忍 banner 与 ANSI。
 
@@ -44,25 +47,40 @@ ZCode 3.17.2 的打包版在 macOS 上关掉了 CDP：`--remote-debugging-port` 
 | 把 `provider_config.json` 的 `defaultModelSelection` 改成 `start-plan / GLM-5.3-Flash` | 主回合仍打 `individual-coding-plan / GLM-5.3` → `[1113] 余额不足` |
 | 同期 `model_usage` 里 `start-plan / GLM-5.3-Flash → completed` | 桌面版发出的请求 |
 
-结论：CLI 认识 `start-plan`，但登录态绑定 `individual-coding-plan`（无额度）。用户桌面用的
-ZCODE WEEKEND BUILD（5 亿免费 token，走 `start-plan / GLM-5.3-Flash`）在 CLI 侧取不到。
-**步骤 1 的真机验收受阻于账号，不在代码**；等账号侧能用周末套餐或换到有额度的套餐，再补一条
-`-p "只回复 OK"` 的真机记录即可。
+结论（2026-11-08 20:20 修正，取代上面按账号的解释）：模型选择**是会话级**的。CLI 只认
+`session_entry` 里那条 `type='runtime/model_selection'`；`provider_config.json` 的
+`defaultModelSelection`、`setting.json` 的 `providerFamilyConnectionSelections`、
+会话 `metadata.json` 里的 `modelSelection` 都改不动主回合（三项都实测过并已还原）。
+所以 CLI 只要 `--resume` 一个选好模型的会话，就能用任何 provider，包括第三方。
+
+两条真机证据：
+
+| 做法 | 结果 |
+|------|------|
+| `--resume sess_22c77399-…`（桌面里用 mimo 的那个会话）`-p "只回复 OK" --cwd <ws>` | stdout `OK`、exit=0，`model_usage` 记 `xiaomi-mimo / mimo-v2.6-flash / completed` |
+| 自造 `session` + `session_entry`（`sess_probe_mimo_seed1`）再 `--resume` | stdout `OK`、exit=0（探针行已删） |
+
+落地：配置 `cliSessionId`（默认 `''`），非空时参数变成
+`<entry> --resume <id> -p <prompt> --cwd <ws> --no-color`。会话 id 在 ZCode 界面里可复制。
 
 ## 进度
 
-- 步骤 1：接线全部打通（发现入口、spawn、退出码、stderr 尾巴都真机验证），**卡在 1113**。
-- 步骤 2：完成。`lib/cli.js` 311 行（含模块级串行队列），`test/cli.test.mjs` 10 例。
+- 步骤 1：**完成**。无头应答真机跑通：`--resume <选好模型的会话> -p "只回复 OK"` → stdout
+  `OK`、exit=0（见上面的两条证据表）。不带会话 id 时仍会落回账号默认套餐并报 `[1113]`。
+- 步骤 2：完成。`lib/cli.js`（含模块级串行队列），`test/cli.test.mjs` 覆盖成功/非零退出/
+  超时/abort/入口缺失/候选表/显式路径。
 - 步骤 3（与 4 合并执行）：完成。`stripAnsi()` + `parseCliAnswer()`，退出码 0 但 stdout
-  为空判为错误而不是空答案；`test/cli.test.mjs` 新增 3 例解析测试。
+  为空判为错误而不是空答案；`test/cli.test.mjs` 内含 3 例解析测试。
 - 步骤 4：完成。`ZcodeCliSubagentProvider`（provider `zcode-cli`）+ `toCliResult()`，
   复用从 `ZcodeSubagentProvider` 抽出的 `runHandle()`（同一套 abort/dispose 语义）；
   `lib/index.js` 注册第二个 provider 与工具 `subagent_zcode_cli`（新增 `cliEnabled` /
   `cliEntry` / `cliTimeoutMs`）。`test/provider.test.mjs` 新增 6 例，`test/host-route.test.mjs`
   新增 3 例（含 `cliEnabled:false` 退回单后端）。
-- 全套回归：**91/91**。
-- 真机（provider 层）：`ZcodeCliSubagentProvider.start()` → `zcode-cli-b94617cd-…`，
+- 步骤 5（部分）：`cliSessionId`('') 已加，非空时把 `--resume <id>` 插进参数并透传到
+  provider（`test/cli.test.mjs` 新增 1 例断言参数顺序）；`/ask` 的 `backend` 路由未做。
+- 全套回归：**92/92**。
+- 真机（provider 层，无会话 id）：`ZcodeCliSubagentProvider.start()` → `zcode-cli-b94617cd-…`，
   `stopReason:error`，诊断 `zcode-cli: cli-exit: … [1113][余额不足或无可用资源包,请充值。]`
-  ⇒ provider → CLI → 错误分类这条链在真机上成立，唯一缺口仍是账号额度。
-- 剩余：步骤 5（`/ask` 的 `backend` 路由）、步骤 6（`docs/zcode-native/CLI.md`）、
+  ⇒ provider → CLI → 错误分类这条链在真机上成立。
+- 剩余：步骤 5 的 `/ask` `backend` 路由、步骤 6（`docs/zcode-native/CLI.md`）、
   步骤 7（宿主内终验，需重启让 host 半身加载新代码）。
