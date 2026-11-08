@@ -374,3 +374,45 @@ test('deps: a dead port whose launch also fails settles as zcode-not-running wit
   assert.match(result.diagnostic, /launch-timeout/)
   assert.match(result.diagnostic, /zcode_dispatch_checklist/)
 })
+
+test('cli provider: the session is claimed from the caller’s directory, not from config', async () => {
+  const seen = []
+  const provider = new ZcodeCliSubagentProvider(ZCODE_CLI_PROVIDER_NAME, {
+    sessionResolver: (cwd) => ({ id: `sess_${cwd.split('/').pop()}`, model: { providerId: 'xiaomi-mimo', modelId: 'mimo-v2.6-flash' } }),
+    runCli: async (config) => {
+      seen.push(config)
+      return { status: 'ok', text: 'OK', exitCode: 0, elapsedMs: 5 }
+    },
+  })
+  const result = await provider.start({ prompt: PROMPT, cwd: '/tmp/project-a' }).result
+  assert.equal(result.stopReason, 'completed')
+  assert.equal(seen[0].sessionId, 'sess_project-a')
+})
+
+test('cli provider: an explicit sessionId still wins over the directory', async () => {
+  const seen = []
+  const provider = new ZcodeCliSubagentProvider(ZCODE_CLI_PROVIDER_NAME, {
+    sessionId: 'sess_pinned',
+    sessionResolver: () => ({ id: 'sess_from_dir' }),
+    runCli: async (config) => {
+      seen.push(config)
+      return { status: 'ok', text: 'OK', exitCode: 0, elapsedMs: 5 }
+    },
+  })
+  await provider.start({ prompt: PROMPT, cwd: '/tmp/project-b' }).result
+  assert.equal(seen[0].sessionId, 'sess_pinned')
+})
+
+test('cli provider: no session for the directory means no --resume, not an error', async () => {
+  const seen = []
+  const provider = new ZcodeCliSubagentProvider(ZCODE_CLI_PROVIDER_NAME, {
+    sessionResolver: () => null,
+    runCli: async (config) => {
+      seen.push(config)
+      return { status: 'ok', text: 'OK', exitCode: 0, elapsedMs: 5 }
+    },
+  })
+  const result = await provider.start({ prompt: PROMPT, cwd: '/tmp/unclaimed' }).result
+  assert.equal(result.stopReason, 'completed')
+  assert.equal(seen[0].sessionId, '')
+})

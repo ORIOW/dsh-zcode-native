@@ -108,7 +108,7 @@ dsh plugin --profile web add "github:ORIOW/dsh-zcode-native#v0.1.0"
 | `cliEnabled` | boolean | `true` | 注册 CLI 后端（provider `zcode-cli` + 工具 `subagent_zcode_cli`）；`false` 就退回只有 CDP 的形态 |
 | `cliEntry` | string | `''` | `zcode.cjs` 的绝对路径；留空按安装位置自动找 |
 | `cliTimeoutMs` | number | `600000` | 一次 CLI 派活的超时（毫秒） |
-| `cliSessionId` | string | `''` | 要复用的 ZCode 会话 id（界面里可复制）。CLI 只认会话级的模型选择，留空则每次新建会话 |
+| `cliSessionId` | string | `''` | 显式指定复用的 ZCode 会话 id（界面里可复制）。留空则按派活工作目录自动认领该目录最新的一条会话 |
 
 ## 能力清单
 
@@ -183,23 +183,27 @@ CLI 后端的行为边界，都是实测出来的：
 完整说明（入口、配置项、失败码、实跑命令）见
 [docs/zcode-native/CLI.md](docs/zcode-native/CLI.md)。
 
-#### CLI 用哪个模型：由会话决定，所以给一个会话 id
+#### CLI 用哪个模型：模型由会话决定，会话由工作目录认领
 
 CLI 只认**会话记录里的模型选择**（`session_entry` 里那条 `runtime/model_selection`），
 配置文件里的默认模型、`setting.json` 里的套餐选择都改不动它（2026-11-08 逐项实测）。
-不给会话 id 时 CLI 每次新建会话，就落回账号的默认套餐，可能直接报
+不给会话时 CLI 每次新建会话，就落回账号的默认套餐，可能直接报
 `[1113][余额不足或无可用资源包,请充值。]`。
 
-做法：先在 ZCode 界面里把对话切到想用的模型（例如第三方 provider 的 `mimo-v2.6-flash`），
-复制那条会话的 id，填进配置 `cliSessionId`。之后每次 CLI 派活都会带
-`--resume <id>`，用同一个模型跑。实测输出：
+所以插件按**派活的工作目录**去会话库里认领：`directory` 等于该目录、未删除的最新一条，然后带
+`--resume` 用它。你在 ZCode 里为某个项目建的那条对话，就是这个项目里所有 CLI 派活用的那条——
+不同的 DSH 会话在不同项目里干活，会各走各的。
+
+想固定到某一条（例如目标会话不在这个目录），填配置 `cliSessionId`，或给 `/ask` 传
+`"sessionId"`；两者都优先于目录认领。实测输出：
 
 ```
 --resume sess_22c77399-… -p "只回复 OK" --cwd <ws>
 → stdout: OK   exit: 0   （model_usage 记 xiaomi-mimo / mimo-v2.6-flash / completed）
 ```
 
-注意 `--resume` 会把这次派活写进那条会话，所以最好是单独建一条专门给插件用的对话。
+注意两点：派活会写进那条会话，别和你在界面里手动用的那条混在一起；认领只看目录、不看模型，
+那条会话的套餐没额度时照样报 `[1113]`，得在 ZCode 界面里换模型或改用 `cliSessionId`。
 
 ### 自动启动：`zcode_launch` 与 `autoLaunch`
 

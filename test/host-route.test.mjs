@@ -63,7 +63,7 @@ writeFileSync(
 )
 
 writeFileSync(join(ROOT, 'package.json'), JSON.stringify({ name: 'zn-host-test', type: 'module', private: true }))
-for (const f of ['index.js', 'status.js', 'cdp.js', 'ask.js', 'provider.js', 'launch.js', 'cli.js', 'checklist.js', 'checklist.md']) copyFileSync(join(SRC, f), join(ROOT, 'lib', f))
+for (const f of ['index.js', 'status.js', 'cdp.js', 'ask.js', 'provider.js', 'launch.js', 'cli.js', 'checklist.js', 'checklist.md', 'sessions.js']) copyFileSync(join(SRC, f), join(ROOT, 'lib', f))
 
 // POST /ask 会碰到两个对外说话的叶子模块：CDP（lib/ask.js）与真实的
 // `node <zcode.cjs>` 子进程（lib/cli.js）。两者都不属于单元测试。真实实现原样

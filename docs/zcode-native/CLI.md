@@ -102,9 +102,9 @@ builtin provider 配置，找不到就报 `无法定位 CLI ZCode Built-in Provi
 | `cliEnabled` | `true` | 关掉后不注册 `zcode-cli` provider 与 `subagent_zcode_cli` 工具，`/ask` 也只留 CDP |
 | `cliEntry` | `''` | 覆盖 CLI 入口路径；空则按平台候选表发现 |
 | `cliTimeoutMs` | `600000` | 单次 CLI 调用上限；超时会杀进程并回 `cli-timeout` |
-| `cliSessionId` | `''` | 非空时把 `--resume <id>` 插进参数，见下节 |
+| `cliSessionId` | `''` | 显式指定 `--resume` 的会话；空则按派活工作目录自动认领（见下节） |
 
-## 模型由会话决定：`cliSessionId`
+## 模型由会话决定，会话由工作目录认领
 
 这是这条后端最容易踩的坑。CLI 的模型选择**只认会话记录**：`~/.zcode/cli/db/db.sqlite` 里
 `session_entry` 表中 `type='runtime/model_selection'` 的那一行。
@@ -120,23 +120,34 @@ builtin provider 配置，找不到就报 `无法定位 CLI ZCode Built-in Provi
 `account:bigmodel-individual-coding-plan / GLM-5.3` → `[1113] 余额不足或无可用资源包`），而桌面版同一
 时刻用 `xiaomi-mimo / mimo-v2.6-flash` 是通的。
 
-做法：在 ZCode 界面里建一条用目标模型的对话（或找一条已经在用的），从界面复制会话 ID，填到
-`cliSessionId`：
+于是「用哪个模型」等价于「`--resume` 哪条会话」。`lib/sessions.js` 只读地按工作目录认领：
 
-```json
-{ "cliEnabled": true, "cliSessionId": "sess_22c77399-d590-4180-9a86-8df8f92de7c7" }
+| 顺序 | 来源 | 说明 |
+|------|------|------|
+| 1 | 请求里的 `sessionId` | `/ask` 的 `body.sessionId`；工具路径没有这个入参 |
+| 2 | 配置 `cliSessionId` | 显式覆盖，适合目标会话不在派活目录里 |
+| 3 | 自动认领 | 会话库里 `directory` 等于派活 `cwd` 且未删除的最新一条；`sha`/尾斜杠已归一，结果缓存 30 秒 |
+| 4 | 都没有 | 不带 `--resume`，按账号默认套餐跑（本机就是 `[1113]`）|
+
+于是不同的 DSH 会话在不同项目里派活，会落到各自项目的那条 ZCode 会话上，不会互相劫持。参数形状：
+
 ```
-
-然后参数变成 `<entry> --resume <id> -p <prompt> --cwd <ws> --no-color`。
+<entry> [--resume <sessionId>] -p <prompt> --cwd <ws> --no-color
+```
 
 两条真机证据：
 
 | 做法 | 结果 |
 |------|------|
 | `--resume` 桌面里用 mimo 的那个会话，`-p "只回复 OK"` | stdout `OK`、exit=0，`model_usage` 记 `xiaomi-mimo / mimo-v2.6-flash / completed` |
-| 自造 `session` + `session_entry`（`sess_probe_mimo_seed1`）再 `--resume` | stdout `OK`、exit=0（探针行已删） |
+| 认领本仓库目录的会话后走 `/ask`（`backend:"cli"`） | `{"status":"ok","text":"OK","exitCode":0,"elapsedMs":6373,"backend":"cli"}` |
 
-注意：派活会写进那条会话，所以最好单独建一条对话给插件用，别和你在界面里手动用的那条混在一起。
+注意两点：
+
+- 派活会写进那条会话，所以别和你在界面里手动用的那条混在一起；ZCode 里为这个项目单独建一条对话
+  给它，那条会成为「最新」，之后自动认领就一直在它上面。
+- 认领只看目录，不看模型。如果那条会话用的套餐没额度，派活照样失败（`cli-exit` 带 `[1113]`）。
+  要么在 ZCode 界面把那条会话的模型换掉，要么用 `cliSessionId` 指定别的一条。
 
 ## 失败形状
 
