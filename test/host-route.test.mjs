@@ -63,7 +63,7 @@ writeFileSync(
 )
 
 writeFileSync(join(ROOT, 'package.json'), JSON.stringify({ name: 'zn-host-test', type: 'module', private: true }))
-for (const f of ['index.js', 'status.js', 'cdp.js', 'ask.js', 'provider.js', 'launch.js', 'cli.js']) copyFileSync(join(SRC, f), join(ROOT, 'lib', f))
+for (const f of ['index.js', 'status.js', 'cdp.js', 'ask.js', 'provider.js', 'launch.js', 'cli.js', 'checklist.js', 'checklist.md']) copyFileSync(join(SRC, f), join(ROOT, 'lib', f))
 
 const mod = await import(pathToFileURL(join(ROOT, 'lib', 'index.js')).href)
 test.after(() => rmSync(ROOT, { recursive: true, force: true }))
@@ -204,7 +204,7 @@ test('M4: provider is registered as "zcode" and carries the config through', () 
 
 test('M4: subagent_zcode is registered with a self-contained prompt contract', () => {
   const ctx = boot()
-  assert.equal(ctx.tools.definitions.length, 3, 'subagent_zcode, subagent_zcode_cli and zcode_launch')
+  assert.equal(ctx.tools.definitions.length, 4, 'subagent_zcode, subagent_zcode_cli, zcode_launch and zcode_dispatch_checklist')
   const tool = ctx.tools.definitions.find((entry) => entry.name === 'subagent_zcode')
   assert.equal(tool.name, 'subagent_zcode')
   assert.deepEqual(Object.keys(tool.parameters).sort(), ['description', 'prompt'])
@@ -299,7 +299,7 @@ test('cli backend: cliEnabled false removes the provider and its tool, leaving M
   assert.deepEqual(ctx.subagents.providers.map((entry) => entry.name), ['zcode'])
   assert.deepEqual(
     ctx.tools.definitions.map((entry) => entry.name).sort(),
-    ['subagent_zcode', 'zcode_launch'],
+    ['subagent_zcode', 'zcode_dispatch_checklist', 'zcode_launch'],
   )
 })
 
@@ -319,4 +319,28 @@ test('cli backend: subagent_zcode_cli routes to the zcode-cli provider', async (
   for (const key of ['agentOptions', 'agentPreset', 'outputSchema', 'maxDepth']) {
     assert.equal(spec.request[key], undefined, `${key} must not be forwarded to an external backend`)
   }
+})
+
+test('checklist: zcode_dispatch_checklist hands back the manual procedure', async () => {
+  const ctx = boot()
+  const tool = ctx.tools.definitions.find((entry) => entry.name === 'zcode_dispatch_checklist')
+  assert.ok(tool, 'the third path must be registered next to the two backends')
+  assert.deepEqual(Object.keys(tool.parameters), ['reason'])
+  assert.equal(tool.parameters.reason.required, undefined, 'reason is optional')
+  assert.equal(tool.isConcurrencySafe(), true)
+  assert.deepEqual(Object.keys(tool.output.schema.properties).sort(), ['guide', 'kind'])
+
+  const value = await tool.execute(
+    { reason: 'CDP 端口不可用，CLI 也没有可用模型' },
+    { signal: new AbortController().signal },
+  )
+  assert.equal(value.kind, 'checklist')
+  assert.match(value.guide, /CDP 端口不可用，CLI 也没有可用模型/)
+  assert.match(value.guide, /DOM 项目守卫/)
+  assert.match(value.guide, /subagent_zcode/)
+
+  const rendered = tool.output.render({}, value)
+  assert.equal(rendered.length, 1)
+  assert.equal(rendered[0].type, 'text')
+  assert.equal(rendered[0].text, value.guide, '渲染就是整份清单，不要截断')
 })

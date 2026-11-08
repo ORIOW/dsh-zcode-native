@@ -299,3 +299,78 @@ test('cli provider: exit code 0 with an empty stdout is an error, not an empty a
   assert.equal(result.stopReason, 'error')
   assert.match(result.diagnostic, /printed no answer/)
 })
+
+// ---- 第三条路：自动通道够不到时，诊断要指向人工清单 ----------------------------
+
+test('cdp provider: an unreachable port points at the checklist, a busy ZCode does not', async () => {
+  const { AskError } = await import('../lib/ask.js')
+  const unreachable = new ZcodeSubagentProvider(ZCODE_PROVIDER_NAME, {
+    runAsk: async () => {
+      throw new AskError('zcode-not-running', 'ECONNREFUSED 127.0.0.1:9222 and launching it failed')
+    },
+  })
+  const bad = await unreachable.start({ prompt: PROMPT }).result
+  assert.equal(bad.stopReason, 'error')
+  assert.match(bad.diagnostic, /zcode-not-running/)
+  assert.match(bad.diagnostic, /zcode_dispatch_checklist/)
+
+  const busy = new ZcodeSubagentProvider(ZCODE_PROVIDER_NAME, {
+    runAsk: async () => {
+      throw new AskError('busy', 'ZCode is generating')
+    },
+  })
+  const busyResult = await busy.start({ prompt: PROMPT }).result
+  assert.doesNotMatch(busyResult.diagnostic, /zcode_dispatch_checklist/, '业务失败不该提示走人工')
+})
+
+test('cli provider: a rejected model points at the checklist', async () => {
+  const provider = new ZcodeCliSubagentProvider(ZCODE_CLI_PROVIDER_NAME, {
+    runCli: async () => {
+      throw new CliError('cli-exit', 'zcode cli: exit code 1 — the cli said: [1113][余额不足或无可用资源包,请充值。]')
+    },
+  })
+  const result = await provider.start({ prompt: PROMPT }).result
+  assert.match(result.diagnostic, /\[1113\]/)
+  assert.match(result.diagnostic, /zcode_dispatch_checklist/)
+})
+
+test('cli provider: a missing entry points at the checklist too', async () => {
+  const provider = new ZcodeCliSubagentProvider(ZCODE_CLI_PROVIDER_NAME, {
+    runCli: async () => {
+      throw new CliError('cli-not-found', 'zcode cli: no entry found')
+    },
+  })
+  const result = await provider.start({ prompt: PROMPT }).result
+  assert.match(result.diagnostic, /zcode_dispatch_checklist/)
+})
+
+test('deps: the auto-launch hook reaches ask instead of being swallowed by the config argument', async () => {
+  let seenDeps = null
+  const provider = new ZcodeSubagentProvider(ZCODE_PROVIDER_NAME, {
+    ensureRunning: async () => ({ launched: true }),
+    runAsk: async (config, text, deps) => {
+      seenDeps = deps
+      return { status: 'ok', answer: 'OK', elapsedMs: 1 }
+    },
+  })
+  const result = await provider.start({ prompt: PROMPT }).result
+  assert.equal(result.stopReason, 'completed')
+  assert.equal(typeof seenDeps?.ensureRunning, 'function', 'runAsk 的第三个参数必须带钩子，否则自动启动永远走不到')
+})
+
+test('deps: a dead port whose launch also fails settles as zcode-not-running with the checklist hint', async () => {
+  const provider = new ZcodeSubagentProvider(ZCODE_PROVIDER_NAME, {
+    debugPort: 9222,
+    attachCdp: async () => {
+      throw new Error('zcode-native: CDP http://127.0.0.1:9222/json/list unreachable (fetch failed)')
+    },
+    ensureRunning: async () => {
+      throw Object.assign(new Error('ZCode said: bad option: --remote-debugging-port=9222'), { code: 'launch-timeout' })
+    },
+  })
+  const result = await provider.start({ prompt: PROMPT }).result
+  assert.equal(result.stopReason, 'error')
+  assert.match(result.diagnostic, /zcode-not-running/)
+  assert.match(result.diagnostic, /launch-timeout/)
+  assert.match(result.diagnostic, /zcode_dispatch_checklist/)
+})

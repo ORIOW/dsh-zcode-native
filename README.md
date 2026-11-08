@@ -112,6 +112,10 @@ dsh plugin --profile web add "github:ORIOW/dsh-zcode-native#v0.1.0"
 
 ## 能力清单
 
+宿主里共四个工具：`subagent_zcode`（CDP 派活）、`subagent_zcode_cli`（无头 CLI
+派活）、`zcode_launch`（找并启动 ZCode 的调试端口）、`zcode_dispatch_checklist`
+（前两条都够不到时的人工清单）。下面逐项说明。
+
 ### HTTP 接口（host 半身，仅 loopback，响应带 `cache-control: no-store`）
 
 - **`GET /plugins/dsh-zcode-native/status`**：只读状态快照，含账号（仅 id /
@@ -214,6 +218,33 @@ CLI 只认**会话记录里的模型选择**（`session_entry` 里那条 `runtim
 **单实例语义**：ZCode 是 Electron 单实例应用，已有实例在跑时新进程的参数会被丢掉。
 所以端口不通 + 已有实例在跑 ⇒ 默认报 `already-running-without-debug-port`（提示你
 退出或传 `restart:true`），绝不偷偷杀掉你正在用的 ZCode。
+
+### 第三条路：`zcode_dispatch_checklist`（两条后端都够不到时）
+
+前两条路都有机器前提：CDP 那条要调试端口，CLI 那条要有一个它肯用的模型。两个前提
+都不成立时，插件不再让你去猜错误码，而是把「手工给 ZCode 派活」的完整清单交出来：
+
+| 情况 | 现象 | 走哪条路 |
+| --- | --- | --- |
+| 端口起不来 | `zcode-not-running`，stderr 带 `bad option: --remote-debugging-port` | 清单（第 1 步就是端口排查与启动命令） |
+| CLI 找不到入口 | `cli-not-found` | 清单 + 检查 ZCode 是否装在这台机器上 |
+| CLI 没有可用模型 | `cli-exit`，stderr 带 `[1113]` 或 `Select a model` | 清单 + 先在 ZCode 里把会话模型切对 |
+| 正常派活被拒 | `busy`、prompt 为空 | 不是「通道不可用」，照原错误处理，不提示清单 |
+
+怎么用：派活失败后调工具 `zcode_dispatch_checklist`（参数只有一个可选的 `reason`），
+它返回一整份可执行的人工流程：
+
+- **DOM 项目守卫**：读 48px 会话标题条（`app-region:drag`），标题不符就停下问人；
+  不能用全文匹配（左侧任务列表里列着所有项目名，会误判）。
+- **能用的选择器与判据**：`[class~="group/assistant-turn"]`、`group/assistant-row`、
+  发送后必须出现新回合（`no-new-turn` 就是没发出去）、答案按 `turns[before]` 取。
+- **踩过的坑**：`execCommand` 清不掉 composer、「超时 ≠ 失败，绝不重发」、
+  每次 ask 都是新会话所以 prompt 必须自包含。
+- 抬头会写明触发原因、先试过的后端与那次诊断；正文与工作区技能
+  `.dsh/skills/zcode-dispatch-checklist/` 同源（`lib/checklist.md` 是它的同步副本）。
+
+清单里出现的 `zcode_ask` / `zcode_status` 属于姊妹插件 dsh-zcode：前者对应本插件的
+`subagent_zcode`，后者对应 HTTP 路由 `/plugins/dsh-zcode-native/status`。
 
 ### 侧边栏看板
 
