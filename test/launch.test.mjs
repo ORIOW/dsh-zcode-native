@@ -157,11 +157,16 @@ test('probe: a refused port is data, not an exception', async () => {
 
 test('launch: an already-wired ZCode is reused, not started twice', async () => {
   let spawned = 0
+  const probeRuns = []
   const { deps } = makeDeps({
     fetch: async () => ({ ok: true, json: async () => ({ Browser: 'ZCode/3.17.1', webSocketDebuggerUrl: 'ws://x' }) }),
     spawn: () => {
       spawned += 1
       return { pid: 1, unref() {} }
+    },
+    run: async (file, args) => {
+      probeRuns.push([file, ...(args ?? [])])
+      return { stdout: '3.18.0' }
     },
   })
   const outcome = await launch({ port: 9222 }, deps)
@@ -169,6 +174,7 @@ test('launch: an already-wired ZCode is reused, not started twice', async () => 
   assert.equal(outcome.launched, false)
   assert.equal(outcome.browser, 'ZCode/3.17.1')
   assert.equal(spawned, 0)
+  assert.equal(probeRuns.length, 0, 'a reachable port short-circuits before the version probe')
 })
 
 test('launch: a running ZCode without the port is refused unless restart is explicit', async () => {
@@ -326,6 +332,8 @@ test('versions: dotted segments compare numerically, missing segments count as 0
   assert.equal(compareVersions('3.18.0.10300', '3.17.2'), 1)
   assert.equal(compareVersions('3.17', '3.17.0'), 0)
   assert.equal(compareVersions('3.9.9', '3.17.2'), -1) // 9 < 17 numerically, not lexically
+  assert.equal(compareVersions('3.17.10', '3.17.2'), 1) // 10 > 2 numerically, not lexically
+  assert.equal(compareVersions('3.17.2', '3.17.10'), -1)
   assert.equal(versionAtLeast('3.17.2', '3.17.2'), true)
   assert.equal(versionAtLeast('3.17.1', '3.17.2'), false)
   assert.equal(versionAtLeast('3.18.0.10300', '3.17.2'), true)
@@ -375,6 +383,24 @@ test('probeAppVersion: macOS reads CFBundleShortVersionString from the bundle In
   })
   assert.equal(version, '3.17.2')
   assert.deepEqual(calls[0], ['defaults', 'read', '/Applications/ZCode.app/Contents/Info.plist', 'CFBundleShortVersionString'])
+})
+
+test('probeAppVersion: linux pins the version to a line that says version', async () => {
+  const calls = []
+  const decoy = await probeAppVersion('/opt/ZCode/zcode', {
+    platform: 'linux',
+    run: async (file, args) => {
+      calls.push([file, ...(args ?? [])])
+      return { stdout: 'Built 2026.11.12\nVersion 3.18.0.10300\n' }
+    },
+  })
+  assert.equal(decoy, '3.18.0.10300', 'an earlier dotted number (a date) must not win')
+  assert.deepEqual(calls[0], ['/opt/ZCode/zcode', '--version'])
+  const bare = await probeAppVersion('/opt/ZCode/zcode', {
+    platform: 'linux',
+    run: async () => ({ stdout: '3.17.1\n' }),
+  })
+  assert.equal(bare, '3.17.1', 'bare version output still parses via the fallback')
 })
 
 test('probeAppVersion: unreadable metadata is null, never an exception', async () => {

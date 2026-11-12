@@ -14,7 +14,7 @@ issue #1（ORIOW，2026-11-05）只有一句标题：
 ## 1. 实现
 
 `lib/launch.js`，所有外部依赖可注入（`exists / listDir / run / spawn / fetch / sleep / now`），
-所以整套平台矩阵能在任何系统上毫秒级跑完（`test/launch.test.mjs`，22 例）。
+所以整套平台矩阵能在任何系统上毫秒级跑完（`test/launch.test.mjs`，24 例）。
 
 ### 查找顺序
 
@@ -99,14 +99,15 @@ option: --remote-debugging-port=9222`；旧启动逻辑要等满 30 秒预算才
 
 ## 3. 测试
 
-`test/launch.test.mjs` 22 例（全 fake dep）：win32 候选首位、darwin 两个 bundle 路径、
+`test/launch.test.mjs` 24 例（全 fake dep）：win32 候选首位、darwin 两个 bundle 路径、
 显式路径命中/miss、`where ZCode.exe` 回退、两层扫描、全 miss 的 `searched` 清单、
-探测异常降级、已连上复用、无端口不重启、`restart` 先 quit 再 spawn 并带参数、
+探测异常降级、已连上复用（且不触发版本探测）、无端口不重启、`restart` 先 quit 再 spawn 并带参数、
 端口永不打开 → `launch-timeout`（含预算数字）、应用 stderr 进入错误消息、找不到可执行
-文件不 spawn、`bad-port` 不探测；另有版本比较（数字段、缺段补 0）、`probeAppVersion`
-的 win32/darwin 读取与失败降级 null、CDP 拒绝版本快失败（不 spawn、不 quit、时钟不前进）、
+文件不 spawn、`bad-port` 不探测；另有版本比较（数字段、缺段补 0、3.17.10 > 3.17.2）、`probeAppVersion`
+的 win32/darwin/linux 读取与失败降级 null（linux 锚定含 version 的行，无关点号数字不误报）、
+CDP 拒绝版本快失败（不 spawn、不 quit、时钟不前进）、
 低于阈值的版本照旧 spawn、版本读不到降级旧逻辑。
 `test/ask.test.mjs` 2 例：端口死了自动启动后重试、启动失败映射成 `zcode-not-running`。
 `test/host-route.test.mjs` 1 例：`zcode_launch` 的参数与输出形状。
-全量：129 例——Windows 3.18.0 真机（2026-11-12）128 绿；1 个失败为 `test/cli.test.mjs:73`
+全量：131 例——Windows 3.18.0 真机（2026-11-12）130 绿；1 个失败为 `test/cli.test.mjs:73`
 的预存平台敏感用例（darwin 期望值写死、未注入 platform，非 darwin 宿主必挂）。
