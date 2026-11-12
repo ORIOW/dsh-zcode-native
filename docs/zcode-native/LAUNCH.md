@@ -14,7 +14,7 @@ issue #1（ORIOW，2026-11-05）只有一句标题：
 ## 1. 实现
 
 `lib/launch.js`，所有外部依赖可注入（`exists / listDir / run / spawn / fetch / sleep / now`），
-所以整套平台矩阵能在任何系统上毫秒级跑完（`test/launch.test.mjs`，15 例）。
+所以整套平台矩阵能在任何系统上毫秒级跑完（`test/launch.test.mjs`，22 例）。
 
 ### 查找顺序
 
@@ -52,6 +52,13 @@ ZCode 是 Electron 单实例应用：已有实例在跑时，新进程的命令�
 轮询用的 `defaultSleep` **不能** `unref()`——否则 `await` 期间没有句柄可等，node 以
 `Detected unsettled top-level await` / exit code 13 退出。
 
+### 版本快失败（3.17.2+）
+
+spawn 之前先读已装 ZCode 的版本（`probeAppVersion`，纯只读，任何失败返回 null 并照旧
+走启动逻辑）：≥ `CDP_REFUSING_MIN_VERSION`（3.17.2，实测拒绝开关的最低版本）时立即抛
+`version-no-cdp`，消息里指向 CLI 后端（`subagent_zcode_cli`）或回退 3.17.1。该步位于
+破坏性 quit **之前**——`restart: true` 也不得先杀掉一个开不出端口的版本。
+
 ### 两条触发路径
 
 - **自动**：`lib/ask.js` 的 `attachZCode()` —— 先 attach；失败且配置了 `ensureRunning`
@@ -80,17 +87,26 @@ ZCode 3.17.2 上打不开**——应用自己拒绝这个开关，与插件无�
 asar 里`!isPackaged` 分支只在**非打包**构建才 `appendSwitch("remote-debugging-port","9229")`，
 打包版没有任何替代入口，`~/.zcode/v2/setting.json` 也没有端口配置键。
 
-Windows（issue 原平台）未在本机验证：那边走 `ZCode.exe --remote-debugging-port=9222`，
-exe 的 argv 处理与 macOS 启动器不同，需在 Win11 上实测；失败时 `launch-timeout` 会带着
-exe 自己的 stderr，一眼能看出是不是同一类拒绝。
+**Windows 实测（2026-11-12，Win11，ZCode 3.18.0.10300）**：同类拒绝，且更彻底——
+进程**直接退出**，连窗口都不开，stderr 只有一句 `C:\Program Files\ZCode\ZCode.exe: bad
+option: --remote-debugging-port=9222`；旧启动逻辑要等满 30 秒预算才报
+`launch-timeout`（stderr 尾巴留在消息里）。据此 `launch.js` 现在在启动前先读可执行文件
+的版本（Windows：PowerShell `VersionInfo.FileVersion`；macOS：`Info.plist` 的
+`CFBundleShortVersionString`；Linux：`--version`；读不到返回 null、照旧逻辑走）：
+≥ `CDP_REFUSING_MIN_VERSION`（3.17.2，实测拒绝开关的最低版本）立即报
+`version-no-cdp` 并指向 CLI 后端或回退 3.17.1——在破坏性 quit 之前抛出，不 spawn、
+不空等 30 秒，即使 `restart: true` 也不会先杀掉正在跑的实例。
 
 ## 3. 测试
 
-`test/launch.test.mjs` 15 例（全 fake dep）：win32 候选首位、darwin 两个 bundle 路径、
+`test/launch.test.mjs` 22 例（全 fake dep）：win32 候选首位、darwin 两个 bundle 路径、
 显式路径命中/miss、`where ZCode.exe` 回退、两层扫描、全 miss 的 `searched` 清单、
 探测异常降级、已连上复用、无端口不重启、`restart` 先 quit 再 spawn 并带参数、
 端口永不打开 → `launch-timeout`（含预算数字）、应用 stderr 进入错误消息、找不到可执行
-文件不 spawn、`bad-port` 不探测。
+文件不 spawn、`bad-port` 不探测；另有版本比较（数字段、缺段补 0）、`probeAppVersion`
+的 win32/darwin 读取与失败降级 null、CDP 拒绝版本快失败（不 spawn、不 quit、时钟不前进）、
+低于阈值的版本照旧 spawn、版本读不到降级旧逻辑。
 `test/ask.test.mjs` 2 例：端口死了自动启动后重试、启动失败映射成 `zcode-not-running`。
 `test/host-route.test.mjs` 1 例：`zcode_launch` 的参数与输出形状。
-全量：71 → 72 例全绿。
+全量：129 例——Windows 3.18.0 真机（2026-11-12）128 绿；1 个失败为 `test/cli.test.mjs:73`
+的预存平台敏感用例（darwin 期望值写死、未注入 platform，非 darwin 宿主必挂）。

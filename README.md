@@ -36,11 +36,12 @@
   仓库自带的 `scripts/zcode-debug.sh`（默认端口 9222，会自动退旧实例再启动）等价于
   `restart: true` 的手动版。
 
-- ⚠️ **ZCode 3.17.2（2026-11-02 起）在 macOS 上拒绝该开关**：进程能起、窗口能开，
-  但 stderr 报 `bad option: --remote-debugging-port=9222`，端口永不通；打包构建没有
-  替代入口（asar 里只有 `!isPackaged` 才开 9229）。插件这时会以 `launch-timeout`
-  失败并把那句 stderr 放在消息里。macOS 上目前得回退 3.17.1。Windows 未受影响地
-  验证中。
+- ⚠️ **ZCode 3.17.2+（含 Windows 3.18.0）的打包构建都拒绝该开关**：macOS 上进程能起、
+  窗口能开，但端口永不通；Windows 3.18.0（2026-11-12 实测）进程直接退出、连窗口都不开
+  （stderr `bad option: --remote-debugging-port=9222`）。打包构建没有替代入口（asar 里
+  只有 `!isPackaged` 才开 9229）。插件在启动前会读已装 ZCode 可执行文件的版本：≥3.17.2
+  立即以 `version-no-cdp` 失败（不浪费 30 秒启动等待，也不会杀掉你正在跑的实例），
+  并指向 CLI 后端（`subagent_zcode_cli`）或回退 3.17.1。
 
 ## 安装
 
@@ -152,9 +153,9 @@ composer 只属于当前可见的那一个。插件在发送前记下标题栏�
 
 ### 两条后端：`subagent_zcode` 与 `subagent_zcode_cli`
 
-ZCode 3.17.2 的打包版在 macOS 上不再接受 `--remote-debugging-port`（`app.asar`
-里唯一开 CDP 的语句在 `!isPackaged` 分支），所以插件同时提供第二条通道：驱动
-ZCode 自带的无头 CLI。
+ZCode 3.17.2+ 的打包版（macOS 与 Windows 3.18.0，均实测）不再接受 `--remote-debugging-port`
+（`app.asar` 里唯一开 CDP 的语句在 `!isPackaged` 分支），所以插件同时提供第二条通道：
+驱动 ZCode 自带的无头 CLI。
 
 | | `subagent_zcode`（CDP） | `subagent_zcode_cli`（CLI） |
 | --- | --- | --- |
@@ -227,6 +228,12 @@ CLI 只认**会话记录里的模型选择**（`session_entry` 里那条 `runtim
 **单实例语义**：ZCode 是 Electron 单实例应用，已有实例在跑时新进程的参数会被丢掉。
 所以端口不通 + 已有实例在跑 ⇒ 默认报 `already-running-without-debug-port`（提示你
 退出或传 `restart:true`），绝不偷偷杀掉你正在用的 ZCode。
+
+**版本快失败**：启动前插件先读已装 ZCode 可执行文件的版本（Windows 读文件版本信息、
+macOS 读 `Info.plist`、Linux 跑 `--version`；读不到按未知处理，照旧逻辑走）。
+版本 ≥3.17.2（实测拒绝开关的最低版本，`CDP_REFUSING_MIN_VERSION`）时立即报
+`version-no-cdp`，指向 CLI 后端或回退 3.17.1——不空等 30 秒，即使传了
+`restart: true` 也不会先杀掉你正在跑的实例。
 
 ### 第三条路：`zcode_dispatch_checklist`（两条后端都够不到时）
 
@@ -316,9 +323,11 @@ DSH 界面右侧边栏（Subagents / Tasks 旁）出现「ZCode」tab：账号�
 - 一次只能服务一个 ZCode 会话：派活串行排队，ZCode 正在生成时会拒绝新任务。
 - 必须由你手动在 ZCode 里打开目标项目，插件不做项目切换。
 - 自动启动能拉起进程，但**能否开出 CDP 端口取决于 ZCode 自己的 argv 处理**：
-  macOS 3.17.2 直接拒绝该开关（见前置条件）；启动失败时插件只报事实，不绕过应用。
-- Windows / Linux 的启动路径未在本机验证（候选表与 `where` 回退是照 Windows 惯例写的，
-  单测覆盖，缺真机证据）。
+  3.17.2（macOS）与 3.18.0（Windows，2026-11-12 实测）起的打包构建直接拒绝该开关
+  （见前置条件）；插件按版本快失败（见自动启动），启动失败时只报事实，不绕过应用。
+- Windows 的启动路径已真机实测（3.18.0：拒绝开关、进程直接退出，见前置条件）；
+  Linux 的启动路径未在本机验证（候选表与 `where` 回退是照惯例写的，单测覆盖，
+  缺真机证据）。
 - ZCode 界面更新可能使 DOM 选择器失效（选择器均已按 3.17.1 实测校准）。
 
 ## 路线图

@@ -12,9 +12,12 @@ import assert from 'node:assert/strict'
 import {
   LaunchError,
   candidateExecutables,
+  compareVersions,
   discoverExecutable,
   launch,
+  probeAppVersion,
   probeDebugPort,
+  versionAtLeast,
 } from '../lib/launch.js'
 
 const WIN_ENV = {
@@ -315,4 +318,130 @@ test('launch: a non-integer port is rejected before touching the machine', async
   const error = await launch({ port: 9.5 }, deps).then(() => null, (failure) => failure)
   assert.equal(error.code, 'bad-port')
   assert.equal(probed, 0)
+})
+
+test('versions: dotted segments compare numerically, missing segments count as 0', () => {
+  assert.equal(compareVersions('3.17.2', '3.17.2'), 0)
+  assert.equal(compareVersions('3.17.1', '3.17.2'), -1)
+  assert.equal(compareVersions('3.18.0.10300', '3.17.2'), 1)
+  assert.equal(compareVersions('3.17', '3.17.0'), 0)
+  assert.equal(compareVersions('3.9.9', '3.17.2'), -1) // 9 < 17 numerically, not lexically
+  assert.equal(versionAtLeast('3.17.2', '3.17.2'), true)
+  assert.equal(versionAtLeast('3.17.1', '3.17.2'), false)
+  assert.equal(versionAtLeast('3.18.0.10300', '3.17.2'), true)
+})
+
+test('probeAppVersion: Windows reads the file version resource via powershell', async () => {
+  const calls = []
+  const version = await probeAppVersion('C:\\Program Files\\ZCode\\ZCode.exe', {
+    platform: 'win32',
+    run: async (file, args) => {
+      calls.push([file, ...args])
+      return { stdout: '3.18.0.10300\r\n' }
+    },
+  })
+  assert.equal(version, '3.18.0.10300')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], 'powershell')
+  assert.equal(calls[0][1], '-NoProfile')
+  // The path must be embedded INSIDE the -Command string (single-quoted), not
+  // passed as a trailing argument: PowerShell concatenates trailing arguments
+  // into the command text, so a separate path argument is a parser error.
+  assert.equal(calls[0][2], '-Command')
+  assert.equal(calls[0][3], "(Get-Item -LiteralPath 'C:\\Program Files\\ZCode\\ZCode.exe').VersionInfo.FileVersion")
+})
+
+test('probeAppVersion: a single quote in the path is escaped for PowerShell', async () => {
+  const calls = []
+  const version = await probeAppVersion("C:\\Program Files\\ZCode's\\ZCode.exe", {
+    platform: 'win32',
+    run: async (file, args) => {
+      calls.push([file, ...args])
+      return { stdout: '3.18.0\r\n' }
+    },
+  })
+  assert.equal(version, '3.18.0')
+  assert.ok(calls[0][3].includes("ZCode''s"), 'single quotes must be doubled inside the -Command string')
+})
+
+test('probeAppVersion: macOS reads CFBundleShortVersionString from the bundle Info.plist', async () => {
+  const calls = []
+  const version = await probeAppVersion('/Applications/ZCode.app/Contents/MacOS/ZCode', {
+    platform: 'darwin',
+    run: async (file, args) => {
+      calls.push([file, ...args])
+      return { stdout: '3.17.2\n' }
+    },
+  })
+  assert.equal(version, '3.17.2')
+  assert.deepEqual(calls[0], ['defaults', 'read', '/Applications/ZCode.app/Contents/Info.plist', 'CFBundleShortVersionString'])
+})
+
+test('probeAppVersion: unreadable metadata is null, never an exception', async () => {
+  const broken = await probeAppVersion('C:\\ZCode.exe', {
+    platform: 'win32',
+    run: async () => {
+      throw new Error('spawn powershell ENOENT')
+    },
+  })
+  assert.equal(broken, null)
+  const noVersion = await probeAppVersion('C:\\ZCode.exe', {
+    platform: 'win32',
+    run: async () => ({ stdout: '' }),
+  })
+  assert.equal(noVersion, null)
+})
+
+test('launch: a CDP-refusing version fails fast — no spawn, no quit, no budget burned', async () => {
+  let spawned = 0
+  let quit = 0
+  const { deps, clock } = makeDeps({
+    listRunning: async () => [{ pid: 100 }],
+    spawn: () => {
+      spawned += 1
+      return { pid: 1, unref() {} }
+    },
+    quit: async () => {
+      quit += 1
+    },
+    run: async (file) => (file === 'powershell' ? { stdout: '3.18.0.10300\r\n' } : { stdout: '' }),
+  })
+  const error = await launch({ port: 9222, restart: true }, deps).then(() => null, (failure) => failure)
+  assert.ok(error instanceof LaunchError)
+  assert.equal(error.code, 'version-no-cdp')
+  assert.match(error.message, /3\.18\.0\.10300/)
+  assert.match(error.message, /subagent_zcode_cli/)
+  assert.match(error.message, /3\.17\.1/)
+  assert.equal(spawned, 0, 'must not spawn a build that cannot open the port')
+  assert.equal(quit, 0, 'must not destroy the running instance before knowing the port cannot open')
+  assert.equal(clock.now(), 0, 'must not burn the launch budget')
+})
+
+test('launch: a version below the CDP-refusing threshold still takes the spawn path', async () => {
+  let fetchCalls = 0
+  const { deps } = makeDeps({
+    run: async (file) => (file === 'powershell' ? { stdout: '3.17.1\r\n' } : { stdout: '' }),
+    fetch: async () => {
+      if (fetchCalls++ === 0) throw new Error('ECONNREFUSED 127.0.0.1:9222')
+      return { ok: true, json: async () => ({ Browser: 'ZCode/3.17.1' }) }
+    },
+  })
+  const outcome = await launch({ port: 9222, timeoutMs: 1000 }, deps)
+  assert.equal(outcome.launched, true)
+  assert.equal(outcome.browser, 'ZCode/3.17.1')
+})
+
+test('launch: an unreadable version falls back to the legacy spawn-and-wait path', async () => {
+  let fetchCalls = 0
+  const { deps } = makeDeps({
+    run: async () => {
+      throw new Error('powershell unavailable')
+    },
+    fetch: async () => {
+      if (fetchCalls++ === 0) throw new Error('ECONNREFUSED 127.0.0.1:9222')
+      return { ok: true, json: async () => ({ Browser: 'ZCode/3.17.1' }) }
+    },
+  })
+  const outcome = await launch({ port: 9222, timeoutMs: 1000 }, deps)
+  assert.equal(outcome.launched, true)
 })
