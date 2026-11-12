@@ -14,7 +14,7 @@ issue #1（ORIOW，2026-11-05）只有一句标题：
 ## 1. 实现
 
 `lib/launch.js`，所有外部依赖可注入（`exists / listDir / run / spawn / fetch / sleep / now`），
-所以整套平台矩阵能在任何系统上毫秒级跑完（`test/launch.test.mjs`，24 例）。
+所以整套平台矩阵能在任何系统上毫秒级跑完（`test/launch.test.mjs`，28 例）。
 
 ### 查找顺序
 
@@ -59,15 +59,21 @@ spawn 之前先读已装 ZCode 的版本（`probeAppVersion`，纯只读，任�
 `version-no-cdp`，消息里指向 CLI 后端（`subagent_zcode_cli`）或回退 3.17.1。该步位于
 破坏性 quit **之前**——`restart: true` 也不得先杀掉一个开不出端口的版本。
 
+**无端口回退（`plainFallback`）**：工具参数 `plainFallback: true`（默认关）时，上述
+`version-no-cdp` 与 `launch-timeout` 不再抛错，而是以**零参数**再 spawn 一次 ZCode
+（`restart: true` 时先退出旧实例）：窗口有了，CDP 仍不可用——返回值
+`{ plainFallback: true, fallbackReason, version }`，供 `zcode_dispatch_checklist`
+手工派活。自动路径（`autoLaunch`）永不传该参数：不冒没人要的窗口。
+
 ### 两条触发路径
 
 - **自动**：`lib/ask.js` 的 `attachZCode()` —— 先 attach；失败且配置了 `ensureRunning`
   时调用启动钩子（`autoLaunch` 默认开），成功则打一行 `ask launch port=… launched=…`，
   再 attach 一次；启动失败抛 `AskError('zcode-not-running')`，消息里同时保留 attach 的
   原始错误与启动错误码。
-- **显式**：工具 `zcode_launch`（`restart` / `executablePath` 两个可选参数，
+- **显式**：工具 `zcode_launch`（`restart` / `executablePath` / `plainFallback` 三个可选参数，
   `isConcurrencySafe` 为 false——它会动进程）。返回值
-  `{ launched, alreadyRunning, restarted, port, executablePath, browser }`。
+  `{ launched, alreadyRunning, restarted, port, executablePath, browser, plainFallback?, fallbackReason?, version? }`。
 
 配置项：`autoLaunch`（默认 true）、`zcodeExecutable`（默认空）、`launchTimeoutMs`（默认 30000）。
 
@@ -99,15 +105,17 @@ option: --remote-debugging-port=9222`；旧启动逻辑要等满 30 秒预算才
 
 ## 3. 测试
 
-`test/launch.test.mjs` 24 例（全 fake dep）：win32 候选首位、darwin 两个 bundle 路径、
+`test/launch.test.mjs` 28 例（全 fake dep）：win32 候选首位、darwin 两个 bundle 路径、
 显式路径命中/miss、`where ZCode.exe` 回退、两层扫描、全 miss 的 `searched` 清单、
 探测异常降级、已连上复用（且不触发版本探测）、无端口不重启、`restart` 先 quit 再 spawn 并带参数、
 端口永不打开 → `launch-timeout`（含预算数字）、应用 stderr 进入错误消息、找不到可执行
 文件不 spawn、`bad-port` 不探测；另有版本比较（数字段、缺段补 0、3.17.10 > 3.17.2）、`probeAppVersion`
 的 win32/darwin/linux 读取与失败降级 null（linux 锚定含 version 的行，无关点号数字不误报）、
 CDP 拒绝版本快失败（不 spawn、不 quit、时钟不前进）、
+plainFallback 快失败路径（零参数 spawn、不空等）、plainFallback+restart 先 quit 再零参数 spawn、
+launch-timeout 后 plainFallback 二次 spawn（零参数）、plainFallback 不碰已在跑的实例、
 低于阈值的版本照旧 spawn、版本读不到降级旧逻辑。
 `test/ask.test.mjs` 2 例：端口死了自动启动后重试、启动失败映射成 `zcode-not-running`。
 `test/host-route.test.mjs` 1 例：`zcode_launch` 的参数与输出形状。
-全量：131 例——Windows 3.18.0 真机（2026-11-12）130 绿；1 个失败为 `test/cli.test.mjs:73`
+全量：135 例——Windows 3.18.0 真机（2026-11-13）134 绿；1 个失败为 `test/cli.test.mjs:73`
 的预存平台敏感用例（darwin 期望值写死、未注入 platform，非 darwin 宿主必挂）。

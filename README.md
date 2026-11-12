@@ -215,9 +215,11 @@ CLI 只认**会话记录里的模型选择**（`session_entry` 里那条 `runtim
   日志里多一行 `[zcode-native] ask launch port=9222 launched=true elapsedMs=...`。
   由 `autoLaunch`（默认开）控制；启动失败会以 `zcode-not-running` 失败，消息里带
   子进程的 stderr（例如应用自己拒绝开关时的 `bad option: ...`）。
-- **显式**：工具 `zcode_launch`，两个可选参数 `restart`（先退出旧实例再启动，
-  **会丢掉 ZCode 里未保存的东西**）与 `executablePath`（指定装在哪）。返回
-  `{ launched, alreadyRunning, restarted, port, executablePath, browser }`。
+- **显式**：工具 `zcode_launch`，三个可选参数：`restart`（先退出旧实例再启动，
+  **会丢掉 ZCode 里未保存的东西**）、`executablePath`（指定装在哪）、`plainFallback`
+  （端口开不起来时改以零参数拉起窗口：CDP 仍不可用，供 `zcode_dispatch_checklist`
+  手工派活；默认关）。返回
+  `{ launched, alreadyRunning, restarted, port, executablePath, browser, plainFallback?, fallbackReason?, version? }`。
 
 查找顺序：配置里的 `zcodeExecutable` → 平台候选表（Windows
 `%LOCALAPPDATA%\Programs\ZCode\ZCode.exe` 等；macOS
@@ -233,7 +235,9 @@ CLI 只认**会话记录里的模型选择**（`session_entry` 里那条 `runtim
 macOS 读 `Info.plist`、Linux 跑 `--version`；读不到按未知处理，照旧逻辑走）。
 版本 ≥3.17.2（实测拒绝开关的最低版本，`CDP_REFUSING_MIN_VERSION`）时立即报
 `version-no-cdp`，指向 CLI 后端或回退 3.17.1——不空等 30 秒，即使传了
-`restart: true` 也不会先杀掉你正在跑的实例。
+`restart: true` 也不会先杀掉你正在跑的实例。传 `plainFallback: true` 时不报错：
+改以零参数拉起窗口（`restart: true` 时先退出旧实例），方便接着走人工清单；
+自动路径（`autoLaunch`）不使用该回退。
 
 ### 第三条路：`zcode_dispatch_checklist`（两条后端都够不到时）
 

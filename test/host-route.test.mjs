@@ -336,11 +336,11 @@ test('M4: an aborted exec signal stops before startActivation', async () => {
 
 // ---- issue #1: 从会话里启动 ZCode ------------------------------------------
 
-test('launch: zcode_launch exposes the two optional knobs and no surprises', () => {
+test('launch: zcode_launch exposes the three optional knobs and no surprises', () => {
   const ctx = boot()
   const tool = ctx.tools.definitions.find((entry) => entry.name === 'zcode_launch')
   assert.ok(tool, 'zcode_launch must be registered next to subagent_zcode')
-  assert.deepEqual(Object.keys(tool.parameters).sort(), ['executablePath', 'restart'])
+  assert.deepEqual(Object.keys(tool.parameters).sort(), ['executablePath', 'plainFallback', 'restart'])
   // Both are optional: the zero-arg call is the common one.
   for (const [key, spec] of Object.entries(tool.parameters)) {
     assert.notEqual(spec.required, true, `${key} must stay optional`)
@@ -349,7 +349,7 @@ test('launch: zcode_launch exposes the two optional knobs and no surprises', () 
   assert.equal(tool.isConcurrencySafe(), false, 'starting an app is not concurrency safe')
   assert.deepEqual(
     Object.keys(tool.output.schema.properties).sort(),
-    ['alreadyRunning', 'browser', 'executablePath', 'launched', 'port', 'restarted'],
+    ['alreadyRunning', 'browser', 'executablePath', 'fallbackReason', 'launched', 'plainFallback', 'port', 'restarted', 'version'],
   )
   assert.equal(tool.output.schema.properties.port.type, 'number')
   assert.match(tool.description, /ZCode/)

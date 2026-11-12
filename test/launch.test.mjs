@@ -471,3 +471,81 @@ test('launch: an unreadable version falls back to the legacy spawn-and-wait path
   const outcome = await launch({ port: 9222, timeoutMs: 1000 }, deps)
   assert.equal(outcome.launched, true)
 })
+
+test('launch: plainFallback on a CDP-refusing version starts a plain window', async () => {
+  const spawnCalls = []
+  const { deps } = makeDeps({
+    run: async (file) => (file === 'powershell' ? { stdout: '3.18.0.10300' } : { stdout: '' }),
+    spawn: (file, args) => {
+      spawnCalls.push([file, args ?? []])
+      return { pid: 4242, unref() {} }
+    },
+  })
+  const outcome = await launch({ port: 9222, plainFallback: true }, deps)
+  assert.equal(outcome.launched, true)
+  assert.equal(outcome.alreadyRunning, false)
+  assert.equal(outcome.plainFallback, true)
+  assert.equal(outcome.fallbackReason, 'version-no-cdp')
+  assert.equal(outcome.version, '3.18.0.10300')
+  assert.equal(outcome.pid, 4242)
+  assert.equal(outcome.browser, null)
+  assert.equal(spawnCalls.length, 1, 'no port-spawn: the version already says no')
+  assert.deepEqual(spawnCalls[0][1], [], 'the fallback spawn carries no arguments at all')
+})
+
+test('launch: plainFallback with restart:true quits the old instance first', async () => {
+  const spawnCalls = []
+  const quitCalls = []
+  const { deps } = makeDeps({
+    listRunning: async () => [{ pid: 100 }],
+    quit: async (processes) => {
+      quitCalls.push(processes)
+    },
+    run: async (file) => (file === 'powershell' ? { stdout: '3.18.0.10300' } : { stdout: '' }),
+    spawn: (file, args) => {
+      spawnCalls.push([file, args ?? []])
+      return { pid: 500, unref() {} }
+    },
+  })
+  const outcome = await launch({ port: 9222, restart: true, plainFallback: true }, deps)
+  assert.equal(outcome.restarted, true)
+  assert.equal(quitCalls.length, 1)
+  assert.deepEqual(quitCalls[0], [{ pid: 100 }])
+  assert.equal(outcome.plainFallback, true)
+  assert.deepEqual(spawnCalls[0][1], [])
+})
+
+test('launch: plainFallback after a launch-timeout respawns without the port', async () => {
+  const spawnCalls = []
+  const { clock, deps } = makeDeps({
+    spawn: (file, args) => {
+      spawnCalls.push([file, args ?? []])
+      return { pid: 4242, unref() {} }
+    },
+  })
+  const outcome = await launch({ port: 9222, timeoutMs: 900, plainFallback: true }, deps)
+  assert.equal(outcome.plainFallback, true)
+  assert.equal(outcome.fallbackReason, 'launch-timeout')
+  assert.equal(outcome.launched, true)
+  assert.equal(outcome.version, undefined)
+  assert.equal(spawnCalls.length, 2)
+  assert.deepEqual(spawnCalls[0][1], ['--remote-debugging-port=9222'])
+  assert.deepEqual(spawnCalls[1][1], [], 'second chance: zero arguments')
+  assert.ok(clock.now() >= 900, 'the full port budget was spent first')
+})
+
+test('launch: plainFallback never touches an already-running instance', async () => {
+  let spawned = 0
+  const { deps } = makeDeps({
+    listRunning: async () => [{ pid: 100 }],
+    spawn: () => {
+      spawned += 1
+      return { pid: 4242, unref() {} }
+    },
+  })
+  await assert.rejects(
+    () => launch({ port: 9222, plainFallback: true }, deps),
+    (error) => error.code === 'already-running-without-debug-port',
+  )
+  assert.equal(spawned, 0)
+})
