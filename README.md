@@ -52,18 +52,18 @@
 设置 → 插件 → 安装插件，粘贴：
 
 ```
-github:ORIOW/dsh-zcode-native#v0.1.0
+github:ORIOW/dsh-zcode-native#v0.2.0
 ```
 
 面板会装依赖、把它选进 `dsh.profile.bundles`，并按包内 `dsh.bundle.patch` 声明的
-`cordis.patch.yml` 插入插件条目。`#v0.1.0` 是 tag；想让版本彻底钉死，换成本次
+`cordis.patch.yml` 插入插件条目。`#v0.2.0` 是 tag；想让版本彻底钉死，换成本次
 Release 页上那个提交 SHA（`github:ORIOW/dsh-zcode-native#<sha>`）——tag 可以被移动，
 SHA 不能。
 
 同一段字符串也是 CLI 命令的后半截：
 
 ```bash
-dsh plugin --profile web add "github:ORIOW/dsh-zcode-native#v0.1.0"
+dsh plugin --profile web add "github:ORIOW/dsh-zcode-native#v0.2.0"
 ```
 
 `dsh plugin` 只是把参数转发给 profile 目录里的 pnpm，**它只装依赖**：装完要在插件页
