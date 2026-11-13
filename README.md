@@ -206,6 +206,23 @@ CLI 只认**会话记录里的模型选择**（`session_entry` 里那条 `runtim
 注意两点：派活会写进那条会话，别和你在界面里手动用的那条混在一起；认领只看目录、不看模型，
 那条会话的套餐没额度时照样报 `[1113]`，得在 ZCode 界面里换模型或改用 `cliSessionId`。
 
+#### 终端里裸跑 CLI：TUI 拉不起来，`-p` 要带环境变量
+
+以上是插件自己的路径。想在自己的终端里直接用这个 CLI，还有两个坑（2026-11-13 在 ZCode 3.18.0 / CLI 0.17.1、Windows 实测）：
+
+- **裸 `node zcode.cjs`（不带参数）是 TUI 形态，系统 node 拉不起来**：`@zcode/tui` 是 SEA 资产，只能经
+  `node:sea` 的 `getAsset`/`getRawAsset` 提供（解压到 `%LOCALAPPDATA%\zcode\Cache\sea-assets\` 并 sha256
+  校验）；`zcode-runtime-host.exe`（`resources\tools\runtime-host\` 下）是原生命名管道服务，不是 node；
+  安装目录没有独立 node 二进制（`node-runtime\` 只是 npm 包）。终端可用形态只有 headless `-p`。
+- **裸 `-p`（不带环境变量）必 exit 1**：`无法定位 CLI ZCode Built-in Provider Config`。CLI 解析内置 provider
+  配置的两个硬编码候选（入口旁 `...\glm\provider\zcode-builtin.json`，以及上溯 5 级、Windows 上钳到
+  `C:\config\...`）在 3.18.0 打包布局里都不存在；真实文件在上层一级的
+  `resources\config\provider\zcode-builtin.json`。`ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`（Active 路径）
+  指向真实文件即通；`ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE` 无效（前者的查找先抛错）。把 `zcode.cjs`
+  拷走绕候选也不可行：薄入口依赖同级 112 MB 的 `packages\`。
+- **插件的 `subagent_zcode_cli` 不受影响**：spawn 时已从入口路径推导该环境变量并传进去（见上文「不写你的
+  全局配置」），无需全局变量。
+
 ### 自动启动：`zcode_launch` 与 `autoLaunch`
 
 端口不通时插件会自己把 ZCode 找出来并带上 `--remote-debugging-port=<port>` 启动，
@@ -333,6 +350,9 @@ DSH 界面右侧边栏（Subagents / Tasks 旁）出现「ZCode」tab：账号�
   Linux 的启动路径未在本机验证（候选表与 `where` 回退是照惯例写的，单测覆盖，
   缺真机证据）。
 - ZCode 界面更新可能使 DOM 选择器失效（选择器均已按 3.17.1 实测校准）。
+- 终端裸跑 CLI 有独立坑（不影响插件路径）：TUI 是 SEA 资产、系统 node 拉不起来；裸 `-p` 因 3.18.0 打包布局
+  找不到内置 provider 配置，须设 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` 指向真实文件（见「两条后端」节末的
+  裸跑说明）。
 
 ## 路线图
 
