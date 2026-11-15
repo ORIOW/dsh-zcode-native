@@ -123,10 +123,51 @@ test('apply (default pref) registers the tab; all three keys match TAB_ID', () =
   assert.equal(typeof panes[0].component, 'function')
   assert.equal(typeof titles[0].component, 'function')
 
-  assert.ok(registered.some((entry) => entry.spec.name === 'settings.section'), 'settings card present')
+  assert.equal(
+    registered.filter((entry) => entry.spec.name === 'settings.section').length,
+    0,
+    'settings card must be gone from the registration surface',
+  )
+
+  const bundleConfigs = registered.filter((entry) => entry.spec.name === 'plugins.bundle.config')
+  assert.equal(bundleConfigs.length, 1, 'exactly one bundle-config registration')
+  assert.equal(bundleConfigs[0].spec.key, PACKAGE_ID, 'keyed by the package name')
 })
 
-test('pref=off: tab NOT registered, settings card still registered', () => {
+/** Resolve one stub level: function components are invoked, hosts pass through. */
+function renderNode(node) {
+  return typeof node.tag === 'function' ? node.tag(node.props) : node
+}
+
+test('bundle-config component renders only the page view (toggle button + status card)', () => {
+  const { sandbox, loads } = makeSandbox()
+  const mod = run(loads, sandbox)
+  const { ctx, injected, registered } = makeCtx()
+
+  mod.apply(ctx)
+  for (const { factory } of injected) factory()
+
+  const entry = registered.find((e) => e.spec.name === 'plugins.bundle.config')
+  assert.ok(entry, 'bundle-config registration must exist after apply')
+
+  const page = entry.component({ view: 'page' })
+  assert.equal(typeof page.tag, 'string', 'page view renders an element tree')
+  assert.ok(Array.isArray(page.children) && page.children.length > 0, 'page view has children')
+
+  const toggle = renderNode(page.children[0])
+  assert.equal(toggle.tag, 'button', 'the sidebar switch is a real <button>')
+  assert.equal(toggle.props['aria-pressed'], true, 'default pref (absent) is pressed/on')
+  assert.ok(String(toggle.children.at(-1)).includes('已开启'), 'visible state text is a non-color indicator')
+
+  const card = renderNode(page.children[1])
+  assert.equal(card.tag, 'article', 'the status board is an <article> card')
+  assert.ok(Array.isArray(card.children) && card.children.length > 0, 'card has regions')
+
+  assert.equal(entry.component({ view: 'summary' }), null, 'summary view paints nothing')
+  assert.equal(entry.component({}), null, 'unknown/absent view paints nothing')
+})
+
+test('pref=off: tab NOT registered, bundle-config page still registered', () => {
   const { sandbox, loads } = makeSandbox({ pref: 'off' })
   const mod = run(loads, sandbox)
   const { ctx, injected, registered, tabRegistrations } = makeCtx()
@@ -136,7 +177,10 @@ test('pref=off: tab NOT registered, settings card still registered', () => {
 
   assert.equal(tabRegistrations.length, 0)
   assert.equal(registered.filter((entry) => entry.spec.name.startsWith('sidebar.right.pane')).length, 0)
-  assert.ok(registered.some((entry) => entry.spec.name === 'settings.section'), 'card must survive the off state')
+  assert.ok(
+    registered.some((entry) => entry.spec.name === 'plugins.bundle.config'),
+    'bundle-config page must survive the off state (it holds the switch to come back)',
+  )
 })
 
 test('storage event with pref=off disposes all three registrations in reverse order, on re-registers', () => {

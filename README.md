@@ -14,7 +14,8 @@
 - **client 半身**（`lib/client.js`，`__ModuleLoader__.load` 信封，注入 DSH web 界面）：
   - 右侧边栏「ZCode 看板」tab（`sidebarRightTabs` + `sidebar.right.pane.tab` 插槽），
     只 fetch 本机 `/status` 路由，每 60 秒自动刷新；
-  - 设置卡（`settings.section` 插槽）里一个开关，控制看板 tab 的注册与否
+  - 「插件 → 已安装 → dsh-zcode-native」页里的开关与状态卡（`plugins.bundle.config`
+    插槽，key 是包名 `dsh-zcode-native`），控制看板 tab 的注册与否
     （偏好存 localStorage，key `dsh-zcode-native:sidebar`，默认开启）。
 
 两个半身的通信只有一条路：client 通过同源 HTTP 读 host 暴露的路由，客户端代码永远不直连 CDP 或远程 API。
@@ -86,7 +87,7 @@ dsh plugin --profile web add "github:ORIOW/dsh-zcode-native#v0.2.0"
 向 profile 的 `cordis.patch.yml` 追加本插件的 `insert` 块（见仓库根的
 `cordis.patch.yml`，`id: zcode-native`）。
 
-完成后重启 DSH Desktop，插件即生效（设置页出现「ZCode Native」卡片）。
+完成后重启 DSH Desktop，插件即生效（「插件 → 已安装 → dsh-zcode-native」页出现开关与状态卡）。
 
 ### C. 压缩包 / 本地绝对路径
 
@@ -287,7 +288,7 @@ macOS 读 `Info.plist`、Linux 跑 `--version`；读不到按未知处理，照�
 
 DSH 界面右侧边栏（Subagents / Tasks 旁）出现「ZCode」tab：账号、套餐到期
 倒计时、余额、客户端版本与可达性、catalog 模板数；底部有更新时间与手动刷新
-按钮。可在设置卡里关掉。
+按钮。可在「插件 → 已安装 → dsh-zcode-native」页里关掉。
 
 ## 用法示例
 
